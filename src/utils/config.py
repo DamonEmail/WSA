@@ -93,7 +93,7 @@ class Config:
         """获取微信文件目录"""
         wechat_dir = self.decrypt_config["wechat_dir"]
         if not os.path.exists(wechat_dir):
-            raise FileNotFoundError(f"找不到微信文件目录：{wechat_dir}")
+            raise FileNotFoundError(f"找不到微���文件目录：{wechat_dir}")
         return wechat_dir
     
     def get_user_db_dir(self, wxid: str) -> str:
@@ -117,3 +117,22 @@ class Config:
         
         with open(self.ai_config_path, 'w', encoding='utf-8') as f:
             json.dump(self.ai_config, f, ensure_ascii=False, indent=2) 
+    
+    def update_user_dir(self, wxid: str, user_dir: str):
+        """更新用户目录配置"""
+        if "wechat_info" not in self.decrypt_config:
+            self.decrypt_config["wechat_info"] = {}
+        
+        if wxid not in self.decrypt_config["wechat_info"]:
+            self.decrypt_config["wechat_info"][wxid] = {}
+        
+        self.decrypt_config["wechat_info"][wxid]["db_dir"] = user_dir
+        self.save_decrypt_config()
+    
+    def save_decrypt_config(self):
+        """保存解密配置到文件"""
+        try:
+            with open(self.decrypt_config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.decrypt_config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存配置文件失败：{str(e)}")

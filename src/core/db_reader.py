@@ -29,7 +29,7 @@ class WeChatDBReader:
         contact_db = os.path.join(self.db_path, "MicroMsg.decrypted.db")
         if os.path.exists(contact_db):
             self.contact_db = contact_db
-            print(f"找���联系人数据库：{self.contact_db}")
+            print(f"找到联系人数据库：{self.contact_db}")
         else:
             raise ValueError(f"找不到联系人数据库：{contact_db}")
         
@@ -220,7 +220,7 @@ class WeChatDBReader:
             columns = cursor.fetchall()
             # print(f"MSG表结构：{columns}")
             
-            # 查询聊天记录 - 不使用时间过滤，在内存中筛选
+            # 查询聊天记录
             cursor.execute("""
                 SELECT CreateTime, StrContent, Type, IsSender, BytesExtra
                 FROM MSG 
@@ -231,7 +231,18 @@ class WeChatDBReader:
             records = cursor.fetchall()
             print(f"数据库中共找到 {len(records)} 条聊天记录")
             
-            # 在内��中筛选时间范围
+            # 打印最近一条消息的信息
+            if records:
+                latest_record = records[0]
+                latest_time = datetime.fromtimestamp(latest_record[0])
+                latest_content = latest_record[1]
+                print(f"\n最近一条消息信息:")
+                print(f"时间: {latest_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"内容: {latest_content[:100]}..." if len(latest_content) > 100 else f"内容: {latest_content}")
+                print(f"消息类型: {latest_record[2]}")
+                print("=" * 50)
+            
+            # 在内存中筛选时间范围
             filtered_records = []
             for record in records:
                 msg_time = datetime.fromtimestamp(record[0])
@@ -241,6 +252,14 @@ class WeChatDBReader:
                     filtered_records.append(record)
             
             print(f"数据库中共找到 {len(records)} 条记录，时间范围内有 {len(filtered_records)} 条")
+            
+            # 如果没有在时间范围内找到记录，显示时间范围信息
+            if not filtered_records and records:
+                earliest_time = datetime.fromtimestamp(records[-1][0])
+                print(f"\n消息时间范围:")
+                print(f"最早消息: {earliest_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"最近消息: {latest_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"查询范围: {start_date.strftime('%Y-%m-%d')} 至 {target_date.strftime('%Y-%m-%d')}")
             
             # 格式化消息记录
             messages = []

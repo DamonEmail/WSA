@@ -7,6 +7,7 @@ import hashlib
 import time
 import hmac
 import ctypes
+from ..utils.config import Config
 
 class DBDecrypt:
     """数据库解密工具"""
@@ -31,7 +32,7 @@ class DBDecrypt:
         # 设置工作目录
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         
-        # 设置原始数据库目录（存放备份的加密数据库）
+        # 设置原始数据库目录（存放备份的加��数据库）
         self.original_dir = os.path.join(self.base_dir, "original_dbs")
         os.makedirs(self.original_dir, exist_ok=True)
         
@@ -54,14 +55,16 @@ class DBDecrypt:
     def _find_user_dir(self) -> str:
         """查找用户目录"""
         try:
+            # 存储所有有效的目录
+            valid_paths = []
+            
             # 遍历 WeChat Files 下的所有目录
-            valid_path = None
             for dirname in os.listdir(self.wechat_files_dir):
                 full_path = os.path.join(self.wechat_files_dir, dirname)
                 if not os.path.isdir(full_path):
                     continue
                     
-                # 检查是否存在 Msg/Multi 目录结构
+                # 检查是���存在 Msg/Multi 目录结构
                 multi_path = os.path.join(full_path, "Msg", "Multi")
                 if not os.path.exists(multi_path):
                     continue
@@ -72,19 +75,54 @@ class DBDecrypt:
                 if not has_msg_db:
                     continue
                     
-                # 如果目录名包含微信号，优先返回
+                # 如果目录名包含微信号，优先尝试
                 if self.wxid.lower() in dirname.lower():
-                    return full_path
+                    valid_paths.insert(0, full_path)  # 放在列表开头
+                else:
+                    valid_paths.append(full_path)
+            
+            if not valid_paths:
+                raise FileNotFoundError("找不到包含消息数据库的目录")
+            
+            # 尝试每个有效目录
+            for path in valid_paths:
+                print(f"尝试目录: {path}")
+                try:
+                    # 尝试解密该目录下的数据库
+                    test_db_path = os.path.join(path, "Msg", "Multi", "MSG0.db")
+                    if not os.path.exists(test_db_path):
+                        continue
                     
-                # 保存这个有效的目录路径
-                valid_path = full_path
-                
-            # 如果没有找到包含微信号的目录，但找到了有效的目录，就返回第一个
-            if valid_path:
-                print(f"警告：未找到完全匹配的目录，使用找到的第一个有效目录：{valid_path}")
-                return valid_path
-                
-            raise FileNotFoundError("找不到包含消息数据库的目录")
+                    # 读取加密数据
+                    with open(test_db_path, 'rb') as f:
+                        test_data = f.read(4096)  # 只读取第一页进行测试
+                    
+                    # 尝试解密
+                    try:
+                        self.decrypt_file(test_data)
+                        print(f"✅ 成功解密目录: {path}")
+                        
+                        try:
+                            # 更新配置文件
+                            config = Config()
+                            config.update_user_dir(self.wxid, path)
+                        except Exception as e:
+                            # 即使配置更新失败，也不影响主流程
+                            print(f"更新配置失败: {str(e)}")
+                        
+                        # 成功解密后直接返回路径
+                        return path
+                        
+                    except Exception as e:
+                        print(f"该目录解密失败: {str(e)}")
+                        continue
+                    
+                except Exception as e:
+                    print(f"尝试目录 {path} 时出错: {str(e)}")
+                    continue
+            
+            # 所有目录都尝试失败后才抛出异常
+            raise FileNotFoundError("所有可能的目录都解密失败")
                 
         except Exception as e:
             raise FileNotFoundError(f"查找用户目录时出错：{str(e)}")
@@ -158,7 +196,7 @@ class DBDecrypt:
             # 解密数据
             decrypted_data = self.decrypt_file(encrypted_data)
             
-            # 保存解密后的文件，添��� .decrypted 后缀
+            # 保存解密后的文件，添加 .decrypted 后缀
             db_name = os.path.basename(db_path)
             base_name, ext = os.path.splitext(db_name)
             decrypted_name = f"{base_name}.decrypted{ext}"  # 例如: MSG0.decrypted.db

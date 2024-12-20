@@ -3,11 +3,19 @@
   "wechat_info": {
     "Zndx9527": {
       "version": "3.9.12.17",
-      "key": "b4a9efba86294d49b41746a683fbb8900111ab0875e14a59b3b73acc2ab67658",
+      "key": "29d8a43dcaeb471cb89af7bdbdb55e0fb6ee8e39e0ad46da8e28116ea44c6e18",
       "last_decrypt": "",
-      "db_dir": "C:\\Users\\VIGO20231013\\Documents\\WeChat Files\\Zndx9527",
+      "db_dir": "C:\\Users\\donghexiye\\Documents\\WeChat Files\\wxid_dze8xz6dnsi122",
       "decrypted_dbs": {}
     }
   },
-  "wechat_dir": "C:\\Users\\VIGO20231013\\Documents\\WeChat Files"
+  "wechat_dir": "C:\\Users\\VIGO20231013\\Documents\\WeChat Files",
+  "debug": true,
+  "show_key": true,
+  "log_level": "DEBUG",
+  "decrypt_info": {
+    "print_salt": true,
+    "print_key_generation": true,
+    "print_decrypt_steps": true
+  }
 }
