@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# WeChatAnalyzer specific
+database/
+original_dbs/
+*.db
+*.dec.db
+*.decrypted.db
+debug.log
+config/ai_config.json
+
+# Virtual Environment
+venv/
+env/
+
+# Build and Release
+release/
+*.spec
+*.exe
+
+# Temp files
+*.tmp
+*.bak
+*.log
+
+# Config files
+.env 

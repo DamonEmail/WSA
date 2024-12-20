@@ -1,0 +1,16 @@
+{
+  "openai": {
+    "name": "OpenAI GPT-3.5",
+    "api_key": "your-openai-api-key",
+    "base_url": "https://api.chatanywhere.tech/v1",
+    "model": "gpt-3.5-turbo",
+    "max_tokens": 2000
+  },
+  "doubao": {
+    "name": "豆包AI",
+    "api_key": "your-doubao-api-key",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    "model": "ep-20241219150823-d5gbj",
+    "max_tokens": 2000
+  }
+}
