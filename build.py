@@ -9,7 +9,7 @@ def build():
     
     # 配置文件路径
     config_dir = os.path.join(root_dir, "config")
-    icon_path = os.path.join(root_dir, "resources", "icons", "app.ico")
+    icon_path = os.path.join(root_dir, "assets", "icon.ico")
     
     # 创建发布目录
     release_dir = os.path.join(root_dir, "release")
@@ -17,7 +17,7 @@ def build():
     
     # PyInstaller参数
     params = [
-        "main.py",                          # 入口文件
+        "run.py",                           # 修改入口文件名
         "--name=WeChatAnalyzer",            # 生成的exe名称
         "--onefile",                        # 打包成单个文件
         "--windowed",                       # 使用GUI模式
@@ -25,11 +25,8 @@ def build():
         "--clean",                          # 清理临时文件
         "--noconfirm",                      # 不确认覆盖
         f"--distpath={release_dir}",        # 指定输出目录
+        f"--icon={icon_path}",              # 添加图标
     ]
-    
-    # 如果有图标就添加
-    if os.path.exists(icon_path):
-        params.append(f"--icon={icon_path}")
     
     # 运行打包
     PyInstaller.__main__.run(params)

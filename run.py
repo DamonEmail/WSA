@@ -74,7 +74,7 @@ def main():
         app = WeChatAnalyzerGUI(root)
         
         # 设置窗口图标
-        icon_path = os.path.join("resources", "icons", "app.ico")
+        icon_path = os.path.join("assets", "icon.ico")  # 修改图标路径
         if os.path.exists(icon_path):
             root.iconbitmap(icon_path)
         
