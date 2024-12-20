@@ -8,6 +8,7 @@ from ..utils.ai_client import OpenAIClient, DouBaoClient
 from src.core.db_reader import WeChatDBReader
 from src.utils.config import Config
 from src.core.wx_decrypt import WeChatDecrypt
+from ..core.db_decrypt import DBDecrypt
 
 class WeChatAnalyzerGUI:
     def __init__(self, root):
@@ -19,6 +20,8 @@ class WeChatAnalyzerGUI:
         self.ai_type = tk.StringVar(value="openai")
         self.wxid = tk.StringVar()
         self.group_name = tk.StringVar()
+        self.prompt_type = tk.StringVar(value="default")
+        self.default_prompt = "你是一位专业的群聊分析师，简明扼要地总结重点。"
         
         # 创建主框架
         self.main_frame = ttk.Frame(self.root, padding="10")
@@ -55,11 +58,21 @@ class WeChatAnalyzerGUI:
         button_frame = ttk.Frame(input_frame)
         button_frame.pack(side=tk.RIGHT)
         
-        self.key_button = ttk.Button(button_frame, text="获取密钥", command=self.get_key)
-        self.key_button.pack(side=tk.LEFT, padx=5)
+        # 只保留一个解密按钮
+        self.decrypt_btn = ttk.Button(
+            button_frame, 
+            text="解密数据库",
+            command=self.decrypt_database,
+            width=12  # 设置按钮宽度
+        )
+        self.decrypt_btn.pack(side=tk.LEFT, padx=5)
         
-        self.decrypt_button = ttk.Button(button_frame, text="解密数据库", command=self.decrypt_db, state='disabled')
-        self.decrypt_button.pack(side=tk.LEFT, padx=5)
+        # 调整按钮字体大小
+        style = ttk.Style()
+        style.configure('TButton', 
+            font=('微软雅黑', 10),  # 置体
+            padding=(10, 5)  # 增加内边距
+        )
         
         # 提示信息
         ttk.Label(input_frame, 
@@ -91,140 +104,108 @@ class WeChatAnalyzerGUI:
         self.dir_label = ttk.Label(dir_frame, text="未解密")
         self.dir_label.pack(side=tk.LEFT, padx=5)
     
-    def get_key(self):
-        """获取密钥"""
+    def decrypt_database(self):
+        """解密数据库的统一流程"""
         wxid = self.wxid.get().strip()
         if not wxid:
-            self.show_message("错误", "请输入微信号！", "error")
-            return
-            
-        try:
-            # 禁用按钮并显示加载状态
-            self.key_button.configure(text="获取中...", state='disabled')
-            
-            # 在新线程中运行，避免界面卡死
-            def run_decrypt():
-                try:
-                    decrypter = WeChatDecrypt()
-                    version, key = decrypter.get_key(wxid)
-                    
-                    # 更新界面
-                    self.root.after(0, lambda: self.version_label.config(text=version))
-                    self.root.after(0, lambda: self.key_label.config(text=key))
-                    
-                    # 保存密钥
-                    Config().save_decrypt_info(wxid, version, key)
-                    
-                    # 显示成功信息并启用解密按钮
-                    self.root.after(0, lambda: self.show_message("成功", "密钥获取成功！"))
-                    self.root.after(0, lambda: self.decrypt_button.configure(state='normal'))
-                    
-                except Exception as e:
-                    self.root.after(0, lambda: self.show_message("错误", f"获取密钥失败：{str(e)}", "error"))
-                finally:
-                    # 恢复按钮状态
-                    self.root.after(0, lambda: self.key_button.configure(text="获取密钥", state='normal'))
-            
-            thread = threading.Thread(target=run_decrypt)
-            thread.start()
-            
-        except Exception as e:
-            self.key_button.configure(text="获取密钥", state='normal')
-            self.show_message("错误", f"获取密钥失败：{str(e)}")
-    
-    def decrypt_db(self):
-        """解密数据库"""
-        if not self.wxid.get():
-            self.show_message("错误", "请先获取密钥！", "error")
+            messagebox.showerror("错误", "请输入微信号")
             return
         
         try:
-            # 禁用按钮并显示加载状态
-            self.decrypt_button.configure(text="解密中...", state='disabled')
+            # 禁用按钮
+            self.decrypt_btn.configure(text="解密中...", state='disabled')
             
-            # 创建进度弹窗
+            # 创建进度窗口
             progress_dialog = DecryptProgressDialog(self.root)
             
-            # 在新线程中运行
             def run_decrypt():
-                error_msg = None
                 try:
-                    config = Config()
-                    info = config.get_decrypt_info(self.wxid.get())
+                    # 1. 获取密钥 (占20%)
+                    progress_dialog.set_progress(0)
+                    progress_dialog.append_log("正在获取密钥...")
+                    decrypter = WeChatDecrypt()
+                    version, key = decrypter.get_key(wxid)
                     
-                    if not info:
-                        raise RuntimeError("找不到钥信息，请先获取密钥！")
+                    # 更新界面显示
+                    self.root.after(0, lambda: [
+                        self.version_label.config(text=version),
+                        self.key_label.config(text=key[:10] + "..." + key[-10:])
+                    ])
                     
-                    from ..core.db_decrypt import DBDecrypt
-                    decrypter = DBDecrypt(
-                        self.wxid.get(),
-                        info["key"]
-                    )
+                    progress_dialog.append_log("✅ 获取密钥成功")
+                    progress_dialog.set_progress(20)
                     
-                    # 更新进度日志
-                    progress_dialog.append_log("开始解密数据库...")
-                    results = decrypter.decrypt_all(progress_callback=progress_dialog.append_log)
+                    # 2. 解密数据库 (占80%)
+                    progress_dialog.append_log("\n开始解密数据库...")
+                    db_decrypter = DBDecrypt(wxid, key)
+                    
+                    def progress_callback(msg):
+                        if "找到以下数据库文件" in msg:
+                            progress_dialog.set_progress(30)
+                        elif "开始准备数据库" in msg:
+                            progress_dialog.set_progress(40)
+                        elif "开始解密数据库" in msg:
+                            progress_dialog.set_progress(50)
+                        elif "联系人数据库解密成功" in msg:
+                            progress_dialog.set_progress(70)
+                        elif "MSG" in msg and "解密成功" in msg:
+                            # 剩余30%平均分配给消息数据库
+                            progress_dialog.increment_progress(5)
+                        elif "数据库解密成功" in msg and "AI分析" in msg:
+                            progress_dialog.set_progress(100)
+                        
+                        progress_dialog.append_log(f"  {msg}" if not msg.startswith("\n") else msg)
+                    
+                    results = db_decrypter.decrypt_all(progress_callback=progress_callback)
                     
                     # 统计结果
                     success_count = sum(1 for v in results.values() if not v.startswith("解密失败"))
                     total_count = len(results)
                     
-                    # 显示结果
-                    result_text = f"数据库解密完成 ({success_count}/{total_count})：\n\n"
-                    for db, path in results.items():
-                        if path.startswith("解密失败"):
-                            result_text += f"❌ {db}: {path}\n"
-                        else:
-                            result_text += f"✅ {db}\n"
-                    
-                    # 完成解密，显示最终结果
-                    progress_dialog.complete(result_text)
-                    
-                    # 更新配置
-                    config.update_decrypted_dbs(self.wxid.get(), results)
-                    
-                    # 显示结果
-                    self.root.after(0, lambda: self.show_message("完成", result_text))
-                    
-                    # 更新解密界面的显示
-                    if results:
-                        db_names = ", ".join(results.keys())
-                        print(f"更新显示: {db_names}")
-                        self.root.after(0, lambda names=db_names: self.dir_label.config(
-                            text=names,
-                            foreground="green"
-                        ))
-                        # 显示分析区域
-                        self.root.after(0, lambda: self.analysis_frame.pack(
-                            fill="both", expand=True, padx=10, pady=5
-                        ))
+                    # 更新主界面显示
+                    if success_count > 0:
+                        db_names = ", ".join(name for name, path in results.items() 
+                                          if not path.startswith("解密失败"))
+                        self.root.after(0, lambda: [
+                            self.dir_label.config(text=db_names, foreground="green"),
+                            self.analysis_frame.pack(fill="both", expand=True, padx=10, pady=5)
+                        ])
+                        
+                        # 更新配置
+                        Config().update_decrypted_dbs(wxid, results)
+                        
+                        # 启用确定按钮
+                        progress_dialog.complete("")  # 不需要额外的文本，因为日志已经显示了结果
                     else:
-                        print("没有成功解密的数据库")
                         self.root.after(0, lambda: self.dir_label.config(
-                            text="解密失败",
-                            foreground="red"
+                            text="解密失败", foreground="red"
                         ))
-                        # 隐藏分析区域
-                        self.root.after(0, self.analysis_frame.pack_forget)
+                        # 启用确定按钮，显示失败信息
+                        progress_dialog.complete("解密失败，请检查错误信息")
                     
                 except Exception as e:
                     error_msg = str(e)
-                    progress_dialog.complete(f"解密失败：{error_msg}")
-                    self.root.after(0, lambda msg=error_msg: self.show_message("错误", f"解密过程出错：{msg}", "error"))
+                    # 使用 after 方法在主线程中更新 UI
+                    self.root.after(0, lambda: progress_dialog.append_log(f"\n❌ 发生错误: {error_msg}"))
                     self.root.after(0, lambda: self.dir_label.config(
-                        text="解密出错",
-                        foreground="red"
+                        text="解密出错", foreground="red"
                     ))
+                    # 使用 after 方法在主线程中更新 UI
+                    self.root.after(0, lambda: progress_dialog.complete("解密出错，请查看错误信息"))
                 finally:
-                    # 恢复按钮状态
-                    self.root.after(0, lambda: self.decrypt_button.configure(text="解密数据库", state='normal'))
+                    # 使用 after 方法在主线程中更新 UI
+                    self.root.after(0, lambda: self.decrypt_btn.configure(
+                        text="解密数据库", state='normal'
+                    ))
             
+            # 在新线程中运行
             thread = threading.Thread(target=run_decrypt)
+            thread.daemon = True  # 设置为守护线程
             thread.start()
             
         except Exception as e:
-            self.decrypt_button.configure(text="解密数据库", state='normal')
-            self.show_message("错误", f"启动解密失败：{str(e)}")
+            self.decrypt_btn.configure(text="解密数据库", state='normal')
+            messagebox.showerror("错误", f"启动解密失败：{str(e)}")
     
     def show_main_frame(self):
         """显示主操作界面"""
@@ -241,74 +222,106 @@ class WeChatAnalyzerGUI:
     
     def create_analysis_frame(self):
         """创建分析区域"""
-        # 创建分析区域的容器
-        self.analysis_frame = ttk.LabelFrame(self.main_frame, text="信息分析", padding="10")
-        self.analysis_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.analysis_frame = ttk.LabelFrame(self.main_frame, text="群聊分析", padding="10")
         
-        # 输入区域
-        input_frame = ttk.Frame(self.analysis_frame)
-        input_frame.pack(fill="x", padx=5, pady=5)
+        # 1. 第一行：群名称、AI模型和提示词设置
+        first_row = ttk.Frame(self.analysis_frame)
+        first_row.pack(fill="x", pady=5)
         
-        # 第一行：群名输入和AI模型选择
-        first_row = ttk.Frame(input_frame)
-        first_row.pack(fill="x", pady=(0, 5))
-        
-        # 群名输入
+        # 群名称
         name_frame = ttk.Frame(first_row)
-        name_frame.pack(side=tk.LEFT)
-        ttk.Label(name_frame, text="群名:").pack(side=tk.LEFT)
+        name_frame.pack(side=tk.LEFT, padx=5)
+        ttk.Label(name_frame, text="群名称:").pack(side=tk.LEFT)
         ttk.Entry(name_frame, textvariable=self.group_name, width=30).pack(side=tk.LEFT, padx=5)
         
-        # AI选择
-        ai_select_frame = ttk.LabelFrame(first_row, text="AI模型", padding=(5, 0))
-        ai_select_frame.pack(side=tk.LEFT, padx=(20, 0))
-        ttk.Radiobutton(ai_select_frame, text="OpenAI", variable=self.ai_type, 
-                        value="openai").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(ai_select_frame, text="豆包AI", variable=self.ai_type, 
-                        value="doubao").pack(side=tk.LEFT, padx=5)
+        # AI模型选择
+        ai_frame = ttk.Frame(first_row)
+        ai_frame.pack(side=tk.LEFT, padx=20)
+        ttk.Label(ai_frame, text="AI模型:").pack(side=tk.LEFT)
+        ttk.Radiobutton(ai_frame, text="OpenAI", variable=self.ai_type, value="openai").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(ai_frame, text="豆包AI", variable=self.ai_type, value="doubao").pack(side=tk.LEFT, padx=5)
         
-        # 第二行：时间范围和分析按钮
-        second_row = ttk.Frame(input_frame)
+        # 提示词设置
+        prompt_type_frame = ttk.Frame(first_row)
+        prompt_type_frame.pack(side=tk.LEFT, padx=20)
+        ttk.Label(prompt_type_frame, text="提示词设置:").pack(side=tk.LEFT)
+        ttk.Radiobutton(prompt_type_frame, text="默认", variable=self.prompt_type, value="default",
+                       command=self.update_prompt_input).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(prompt_type_frame, text="自定义", variable=self.prompt_type, value="custom",
+                       command=self.update_prompt_input).pack(side=tk.LEFT, padx=5)
+        
+        # 2. 第二行：时间范围、分析按钮和提示词输入
+        second_row = ttk.Frame(self.analysis_frame)
         second_row.pack(fill="x", pady=5)
         
         # 时间范围选择
         time_frame = ttk.Frame(second_row)
-        time_frame.pack(side=tk.LEFT)
+        time_frame.pack(side=tk.LEFT, padx=5)
         ttk.Label(time_frame, text="时间范围:").pack(side=tk.LEFT)
-        self.time_range = tk.StringVar(value="1")  # 默认最近一天
-        ttk.Radiobutton(time_frame, text="最近24小时", variable=self.time_range, 
-                        value="1").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(time_frame, text="最近3天", variable=self.time_range, 
-                        value="3").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(time_frame, text="最近7天", variable=self.time_range, 
-                        value="7").pack(side=tk.LEFT, padx=5)
+        self.time_range = tk.StringVar(value="1")
+        ttk.Radiobutton(time_frame, text="最近24小时", variable=self.time_range, value="1").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(time_frame, text="最近3天", variable=self.time_range, value="3").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(time_frame, text="最近7天", variable=self.time_range, value="7").pack(side=tk.LEFT, padx=5)
         
         # 分析按钮
-        self.analyze_button = ttk.Button(second_row, text="开始分析", command=self.start_analysis)
-        self.analyze_button.pack(side=tk.LEFT, padx=(20, 0))
+        self.analyze_button = ttk.Button(
+            second_row,
+            text="开始分析",
+            command=self.start_analysis,
+            width=12
+        )
+        self.analyze_button.pack(side=tk.LEFT, padx=10)
         
-        # 输出区域
-        output_frame = ttk.Frame(self.analysis_frame)
-        output_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        # 提示词输入框 - 改用 Text 组件替代 Entry
+        prompt_frame = ttk.Frame(second_row)
+        prompt_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
+        
+        self.default_prompt = "你是一位专业的群聊分析师，简明扼要地总结重点。"
+        self.prompt_input = tk.Text(
+            prompt_frame,
+            wrap=tk.WORD,  # 自动换行
+            height=2,      # 设置为2行高度
+            font=('微软雅黑', 10)
+        )
+        self.prompt_input.pack(fill="x", expand=True)
+        self.prompt_input.insert("1.0", self.default_prompt)
+        self.prompt_input.configure(state="disabled")
+        
+        # 3. 第三行：分析结果
+        result_frame = ttk.LabelFrame(self.analysis_frame, text="分析结果", padding="5")
+        result_frame.pack(fill="both", expand=True, pady=5)
+        
+        # 创建一个内部框架来包含文本框和按钮
+        inner_frame = ttk.Frame(result_frame)
+        inner_frame.pack(fill="both", expand=True)
         
         # 文本框和滚动条
-        text_frame = ttk.Frame(output_frame)
+        text_frame = ttk.Frame(inner_frame)
         text_frame.pack(fill="both", expand=True)
         
-        self.output_text = tk.Text(text_frame, height=15, width=60, wrap=tk.WORD)
+        self.output_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            height=15,
+            font=('微软雅黑', 10)
+        )
         self.output_text.pack(side=tk.LEFT, fill="both", expand=True)
         
-        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=self.output_text.yview)
+        scrollbar = ttk.Scrollbar(text_frame, command=self.output_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill="y")
         self.output_text.configure(yscrollcommand=scrollbar.set)
         
-        # 底部按钮区域
-        bottom_frame = ttk.Frame(output_frame)
-        bottom_frame.pack(fill="x", pady=(5, 0))
+        # 复制按钮放在文本框下方
+        button_frame = ttk.Frame(inner_frame)
+        button_frame.pack(fill="x", pady=(5, 0))
         
-        # 复制按钮
-        copy_button = ttk.Button(bottom_frame, text="复制内容", command=self.copy_summary)
-        copy_button.pack(side=tk.RIGHT)
+        copy_button = ttk.Button(
+            button_frame,
+            text="复制结果",
+            command=self.copy_summary,
+            width=12
+        )
+        copy_button.pack(side=tk.RIGHT, padx=5)
     
     def browse_db(self):
         """选择数据库目录"""
@@ -326,7 +339,7 @@ class WeChatAnalyzerGUI:
         # 禁用按钮并显示加载状态
         self.analyze_button.configure(text="分析中...", state="disabled")
         self.output_text.delete(1.0, tk.END)
-        self.output_text.insert(tk.END, "正在分析中，请稍候...\n")
+        self.output_text.insert(tk.END, "正在析中，请稍候...\n")
         
         # 在新线程中运行分析
         thread = threading.Thread(target=self.run_analysis)
@@ -353,51 +366,78 @@ class WeChatAnalyzerGUI:
                 # 创建数据库读取器
                 reader = WeChatDBReader(db_path)
                 
-                # 获取聊天记���
+                # 获取聊天记录
                 chat_records = reader.analyze_group(group_name, days=days)
-                print(f"获取到 {len(chat_records)} 条聊天记录")
+                record_count = len(chat_records)
+                print(f"获取到 {record_count} 条聊天记录")
                 
-                # 准备过滤消息
-                filtered_messages = []
-                previous_messages = []
-                previous_senders = []
+                # 更新分析提示
+                self.output_text.delete(1.0, tk.END)
+                if record_count > 800:
+                    self.output_text.insert(tk.END, "正在分析中(聊天记录较多，可能需要较长时间)...\n"
+                                                  f"共发现 {record_count} 条记录，请耐心等待\n")
+                else:
+                    self.output_text.insert(tk.END, f"正在分析 {record_count} 条聊天记录...\n")
                 
-                # 过滤和格式化消息
-                for msg in chat_records:
-                    content = msg['content']
-                    sender = msg.get('sender', 'unknown')  # 获取发送者
-                    
-                    # 过滤消息
-                    if self.filter_message(content, previous_messages, sender, previous_senders):
-                        # 只保留用户名和内容，不要时间
-                        formatted_msg = f"{sender}: {content}"
-                        filtered_messages.append(formatted_msg)
+                # 过滤消息
+                filtered_records = []
+                print("\n开始处理消息记录...")
+                for i, msg in enumerate(chat_records):
+                    try:
+                        # 检查必要字段
+                        if 'content' not in msg:
+                            print(f"警告: 第{i+1}条消息缺少 content 字段")
+                            continue
+                        if 'create_time' not in msg:
+                            print(f"警告: 第{i+1}条消息缺少 create_time 字段")
+                            continue
                         
-                        # 更新历记录
-                        previous_messages.append(content)
-                        previous_senders.append(sender)
+                        content = msg['content']
+                        sender = msg.get('sender', 'unknown')
+                        create_time = msg['create_time']
                         
-                        # 只保留最近的几条消息用于检查重复
-                        if len(previous_messages) > 5:
-                            previous_messages.pop(0)
-                            previous_senders.pop(0)
+                        # 打印一些调试信息
+                        print(f"处理第{i+1}条消息:")
+                        print(f"  - sender: {sender}")
+                        print(f"  - create_time: {create_time}")
+                        # print(f"  - content: {content[:50]}...")  # 只显示前50个字符
+                        
+                        if self.filter_message(content, [], sender, []):
+                            filtered_msg = {
+                                'content': content,
+                                'sender': sender,
+                                'create_time': create_time
+                            }
+                            filtered_records.append(filtered_msg)
+                            
+                    except Exception as e:
+                        print(f"警告: 处理第{i+1}条消息时出错: {str(e)}")
+                        print(f"消息内容: {msg}")
+                        continue
                 
-                print(f"过滤后剩余 {len(filtered_messages)} 条消息")
-                
-                if not filtered_messages:
-                    raise ValueError("过滤后没有有效的消息容")
+                print(f"\n消息过滤完成，共保留 {len(filtered_records)} 条记录")
+                if not filtered_records:
+                    raise ValueError("过滤后没有有效的消息")
                 
                 # 调用AI进行分析
                 try:
+                    # 获取提示词 - 修改获取文本的方式
+                    system_prompt = self.prompt_input.get("1.0", tk.END).strip() if self.prompt_type.get() == "custom" else self.default_prompt
+                    
                     if ai_type == "openai":
-                        print("调用 OpenAI 接口...")
                         client = OpenAIClient()
-                        prompt = f"请分析以下微信群「{group_name}」的聊天记录，并给出总结。"
-                        summary = client.analyze(filtered_messages, prompt)
+                        summary = client.analyze(
+                            messages=filtered_records,
+                            group_name=group_name,
+                            system_prompt=system_prompt  # 传入系统提示词
+                        )
                     else:
-                        print("调用豆包AI接口...")
                         client = DouBaoClient()
-                        summary = client.analyze(filtered_messages)
+                        summary = client.analyze(
+                            messages=filtered_records,
+                            group_name=group_name,
+                            system_prompt=system_prompt  # 传入系统提示词
+                        )
                     
                     print("AI分析完成")
                     
@@ -409,7 +449,7 @@ class WeChatAnalyzerGUI:
                         raise RuntimeError("AI返回的分析结果为空")
                     
                 except Exception as e:
-                    print(f"AI调用失败：{str(e)}")
+                    print(f"AI���用失败：{str(e)}")
                     error_msg = f"AI分析失败：{str(e)}"
                     self.show_message("错误", error_msg, "error")
                     self.output_text.delete(1.0, tk.END)
@@ -528,52 +568,137 @@ class WeChatAnalyzerGUI:
         else:
             messagebox.showinfo(title, message, parent=self.root)
 
+    def update_prompt_input(self):
+        """更新提示词输入框状态"""
+        if self.prompt_type.get() == "default":
+            self.prompt_input.configure(state="normal")
+            self.prompt_input.delete("1.0", tk.END)
+            self.prompt_input.insert("1.0", self.default_prompt)
+            self.prompt_input.configure(state="disabled")
+        else:
+            self.prompt_input.configure(state="normal")
+            self.prompt_input.delete("1.0", tk.END)
+
 class DecryptProgressDialog:
     def __init__(self, parent):
         self.dialog = tk.Toplevel(parent)
-        self.dialog.title("解密进度")
-        self.dialog.geometry("500x300")
-        self.dialog.transient(parent)  # 设置为父窗口的临时窗口
+        self.progress = 0  # 添加进度变量
+        self.update_title()  # 更新标题
+        self.dialog.geometry("500x450")
+        self.dialog.transient(parent)
         
         # 设置弹窗位置为主窗口中心
         self.center_window(parent)
         
-        # 创建文本框和滚动条
-        self.text = tk.Text(self.dialog, wrap=tk.WORD, height=15)
-        self.text.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # 创建主框架
+        main_frame = ttk.Frame(self.dialog)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        scrollbar = ttk.Scrollbar(self.dialog, command=self.text.yview)
+        # 创建文本框框架
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # 创建文本框和滚动条
+        self.text = tk.Text(
+            text_frame, 
+            wrap=tk.WORD, 
+            height=14,
+            font=('微软雅', 10),
+            background='#f0f0f0'
+        )
+        self.text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        
+        # 配置文本标签
+        self.text.tag_configure('success', foreground='#00d26a')      # 绿色 - ✅
+        self.text.tag_configure('complete', foreground='#00d26a')     # 翡翠绿 - 完成提示
+        self.text.tag_configure('error', foreground='#dc3545')        # 红色 - ❌
+        self.text.tag_configure('info', foreground='#17a2b8')         # 蓝色 - 进度信息
+        
+        # 设置字体样式
+        self.text.tag_configure('bold', font=('微软黑', 10, 'bold'))  # 加粗样式
+        
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(text_frame, command=self.text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.text.configure(yscrollcommand=scrollbar.set)
         
-        # 确定按钮（初始时禁用）
-        self.ok_button = ttk.Button(self.dialog, text="确定", state="disabled", command=self.dialog.destroy)
+        # 创建底部按钮框架
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+        
+        # 确定按钮（居中显示）
+        self.ok_button = ttk.Button(
+            button_frame,
+            text="确定",
+            command=self.close_dialog,
+            state="disabled",
+            width=15
+        )
         self.ok_button.pack(pady=5)
         
-        # 禁止关闭按钮
-        self.dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        # 初始时禁用关闭按钮
+        self.dialog.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        # 记录是否完成
+        self.is_completed = False
+    
+    def on_close(self):
+        """处理窗口关闭事件"""
+        if self.is_completed:
+            self.dialog.destroy()
+    
+    def close_dialog(self):
+        """关闭对话框"""
+        self.dialog.destroy()
     
     def append_log(self, text):
         """添加日志"""
+        # 插入文本
+        end_pos = self.text.index(tk.END)
         self.text.insert(tk.END, text + "\n")
-        self.text.see(tk.END)  # 滚动到底部
+        
+        # 为不同的文本应用不同的样式
+        line_start = f"{end_pos} linestart"
+        line_end = f"{end_pos} lineend + 1c"
+        
+        # 检查并应用标签
+        if '✅' in text:
+            self.text.tag_add('success', line_start, line_end)
+        elif '✨' in text and '🎉' in text and '💡' in text:
+            # 为完成提示应用特殊样式
+            self.text.tag_add('complete', line_start, line_end)
+            self.text.tag_add('bold', line_start, line_end)  # 添加加粗效果
+        elif '❌' in text:
+            self.text.tag_add('error', line_start, line_end)
+        elif text.startswith('正在'):
+            self.text.tag_add('info', line_start, line_end)
+        
+        self.text.see(tk.END)  # 滚动到底
     
     def complete(self, final_text):
-        """完��解密"""
-        self.text.insert(tk.END, "\n" + final_text)
-        self.ok_button.configure(state="normal")  # 启用确定按钮
+        """完成解密"""
+        if final_text:
+            self.append_log("\n" + final_text)
+        
+        # 标记完成状态
+        self.is_completed = True
+        
+        # 启用确定按钮
+        self.ok_button.configure(state="normal")
+        
+        # 允许通过关闭按钮关闭窗口
+        self.dialog.protocol("WM_DELETE_WINDOW", self.close_dialog)
     
     def center_window(self, parent):
         """将窗口居中显示"""
-        # 获取主窗口位置和大小
         parent_x = parent.winfo_x()
         parent_y = parent.winfo_y()
         parent_width = parent.winfo_width()
         parent_height = parent.winfo_height()
         
-        # 获取弹窗大小
+        # 调整弹窗大小
         dialog_width = 500
-        dialog_height = 300
+        dialog_height = 450
         
         # 计算居中位置
         x = parent_x + (parent_width - dialog_width) // 2
@@ -581,3 +706,17 @@ class DecryptProgressDialog:
         
         # 设置弹窗位置
         self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+    
+    def update_title(self):
+        """更新窗口标题，显示进度"""
+        self.dialog.title(f"解密进度 ({self.progress}%)")
+    
+    def set_progress(self, value):
+        """设置进度值"""
+        self.progress = value
+        self.update_title()
+    
+    def increment_progress(self, increment):
+        """增加进度值"""
+        self.progress = min(100, self.progress + increment)
+        self.update_title()

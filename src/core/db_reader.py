@@ -29,7 +29,7 @@ class WeChatDBReader:
         contact_db = os.path.join(self.db_path, "MicroMsg.decrypted.db")
         if os.path.exists(contact_db):
             self.contact_db = contact_db
-            print(f"找到联系人数据库：{self.contact_db}")
+            print(f"找���联系人数据库：{self.contact_db}")
         else:
             raise ValueError(f"找不到联系人数据库：{contact_db}")
         
@@ -231,7 +231,7 @@ class WeChatDBReader:
             records = cursor.fetchall()
             print(f"数据库中共找到 {len(records)} 条聊天记录")
             
-            # 在内存中筛���时间范围
+            # 在内��中筛选时间范围
             filtered_records = []
             for record in records:
                 msg_time = datetime.fromtimestamp(record[0])
@@ -264,7 +264,7 @@ class WeChatDBReader:
                         sender = "未知用户"
                     
                     messages.append({
-                        'time': timestamp,
+                        'create_time': timestamp,
                         'content': content,
                         'sender': sender,
                         'is_sender': is_sender,
@@ -278,12 +278,7 @@ class WeChatDBReader:
             conn.close()
     
     def analyze_group(self, group_name, days=1):
-        """分析群聊记录
-        
-        Args:
-            group_name: 群名称
-            days: 分析最近几天的记录，默认1天
-        """
+        """分析群聊记录"""
         try:
             # 1. 获取所有匹配的群ID
             found_groups = self.get_chatroom_id(group_name)
@@ -303,8 +298,8 @@ class WeChatDBReader:
                     print(f"获取群 {chatroom_id} 的记录失败: {str(e)}")
                     continue
             
-            # 3. 按时间排序
-            all_records.sort(key=lambda x: x['time'], reverse=True)
+            # 3. 按时间排序 - 修改这里：使用 create_time 而不是 time
+            all_records.sort(key=lambda x: x['create_time'], reverse=True)
             
             print(f"合并后共有 {len(all_records)} 条记录")
             

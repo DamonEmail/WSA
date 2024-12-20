@@ -212,34 +212,35 @@ class DBDecrypt:
         except Exception as e:
             raise RuntimeError(f"解密失败：{str(e)}")
 
-    def decrypt_all(self, progress_callback=None) -> Dict[str, str]:
+    def decrypt_all(self, progress_callback=None):
         """解密所有数据库"""
         def log(msg):
-            print(msg)
+            print(msg)  # 保留控制台完整日志
             if progress_callback:
-                progress_callback(msg)
+                # 过滤不需要显示的信息
+                if not any(skip in msg for skip in [
+                    "-> ", "备份", r"C:\Users"
+                ]):
+                    progress_callback(msg)
         
         results = {}
         try:
-            log("开始备份原始数据库...")
+            log("开始准备数据库...")
             
-            # 0. 先从微信目录备份原始数据库
-            # 联系人数据库
+            # 0. 备份原始数据库
             original_contact_db = os.path.join(self.msg_dir, "MicroMsg.db")
             if not os.path.exists(original_contact_db):
-                raise FileNotFoundError(f"找不到联系人数据库：{original_contact_db}")
+                raise FileNotFoundError(f"找不到联系人数据库")
             
             backup_contact_path = os.path.join(self.original_dir, "MicroMsg.db")
-            log(f"备份联系人数据库: {original_contact_db} -> {backup_contact_path}")
             shutil.copy2(original_contact_db, backup_contact_path)
             
             # 聊天记录数据库
             msg_dbs_found = False
-            for i in range(10):  # MSG0.db 到 MSG9.db
+            for i in range(10):
                 original_msg_db = os.path.join(self.multi_msg_dir, f"MSG{i}.db")
                 if os.path.exists(original_msg_db):
                     backup_msg_path = os.path.join(self.original_dir, f"MSG{i}.db")
-                    log(f"备份消息数据库: {original_msg_db} -> {backup_msg_path}")
                     shutil.copy2(original_msg_db, backup_msg_path)
                     msg_dbs_found = True
                 else:
@@ -248,16 +249,16 @@ class DBDecrypt:
             if not msg_dbs_found:
                 raise FileNotFoundError("未找到任何消息数据库文件")
             
-            log("数据库备份完成，开始解密...")
+            log("开始解析数据库...")
             
             # 1. 解密联系人数据库
             try:
                 decrypted_path = self.decrypt_db(backup_contact_path)
                 results["MicroMsg.db"] = decrypted_path
-                log(f"✓ 联系人数据库解密成功")
+                log(f"✅ 联系人数据库解密成功")
             except Exception as e:
                 results["MicroMsg.db"] = f"解密失败：{str(e)}"
-                log(f"✗ 联系人数据库解密失败：{str(e)}")
+                log(f"❌ 联系人数据库解密失败：{str(e)}")
             
             # 2. 解密聊天记录数据库
             for i in range(10):
@@ -266,16 +267,19 @@ class DBDecrypt:
                     try:
                         decrypted_path = self.decrypt_db(backup_msg_db)
                         results[f"MSG{i}.db"] = decrypted_path
-                        log(f"✓ MSG{i}.db 解密成功")
+                        log(f"✅ MSG{i}.db 解密成功")
                     except Exception as e:
                         results[f"MSG{i}.db"] = f"解密失败：{str(e)}"
-                        log(f"✗ MSG{i}.db 解密失败：{str(e)}")
+                        log(f"❌ MSG{i}.db 解密失败：{str(e)}")
                 else:
                     break
             
             if not results:
                 raise RuntimeError("所有数据库解密都失败了")
-                
+            
+            # 添加美化的成功提示
+            log("\n✨ 数据库解密成功！🎉 您现在可以进行AI分析！💡")
+            
         except Exception as e:
             log(f"解密过程出错：{str(e)}")
             raise

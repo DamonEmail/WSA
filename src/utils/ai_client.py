@@ -1,5 +1,8 @@
 from openai import OpenAI
 import requests
+from typing import List, Dict, Tuple
+from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
 
 # AI配置
 AI_CONFIGS = {
@@ -15,7 +18,7 @@ AI_CONFIGS = {
         "api_key": "1d93fe5f-af7f-435f-8a36-8466d98a4ea0",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
         "model": "ep-20241219150823-d5gbj",
-        "max_tokens": 2000
+        "max_tokens": 4096
     }
 }
 
@@ -29,21 +32,19 @@ class AIConfig:
             raise ValueError(f"不支持的AI类型: {ai_type}")
         return AI_CONFIGS[ai_type]
 
-class OpenAIClient:
-    def __init__(self):
-        config = AI_CONFIGS["openai"]
-        print(f"初始化OpenAI客户端: 使用API地址 {config['base_url']}")
-        self.client = OpenAI(
-            api_key=config["api_key"],
-            base_url=config["base_url"]
-        )
-        self.model = config["model"]
-        self.max_tokens = config["max_tokens"]
-        self.max_segment_length = 2000
-        print(f"OpenAI客户端初始化完成: model={self.model}")
+class BaseAIClient(ABC):
+    """AI客户端基类"""
     
-    def split_messages(self, messages):
-        """将消息分段"""
+    def __init__(self, max_segment_length: int = 4000):
+        self.max_segment_length = max_segment_length
+    
+    def split_messages_by_length(self, messages: List[str]) -> List[List[str]]:
+        """按长度分段消息
+        Args:
+            messages: 消息列表
+        Returns:
+            List[List[str]]: 分段后的消息列表
+        """
         segments = []
         current_segment = []
         current_length = 0
@@ -64,160 +65,154 @@ class OpenAIClient:
         
         return segments
     
-    def analyze_segment(self, messages, prompt):
+    def split_messages_by_date(self, messages: List[dict], group_name: str) -> List[Tuple[str, List[str]]]:
+        """按日期分段消息"""
+        date_groups: Dict[str, List[str]] = {}
+        
+        # 1. 首先按日期分组
+        for msg in messages:
+            create_time = datetime.fromtimestamp(msg['create_time'])
+            date_str = create_time.strftime('%Y年%m月%d日')
+            
+            formatted_msg = f"{msg.get('sender', 'unknown')}: {msg['content']}"
+            if date_str not in date_groups:
+                date_groups[date_str] = []
+            date_groups[date_str].append(formatted_msg)
+        
+        # 2. 处理每个日期的消息
+        segments = []
+        dates = sorted(date_groups.keys())
+        for date in dates:
+            title = f"{date} 「{group_name}」群聊内容分析"
+            messages = date_groups[date]
+            
+            # 检查该日期的消息是否需要子分段
+            total_length = sum(len(msg) for msg in messages)
+            if total_length > self.max_segment_length:
+                # 需要子分段
+                sub_segments = self.split_messages_by_length(messages)
+                for i, sub_segment in enumerate(sub_segments, 1):
+                    sub_title = f"{title} (第{i}/{len(sub_segments)}部分)"
+                    segments.append((sub_title, sub_segment))
+            else:
+                # 不需要子分段
+                segments.append((title, messages))
+        
+        return segments
+    
+    @abstractmethod
+    def analyze_segment(self, messages: List[str], prompt: str, system_prompt: str) -> str:
+        """分析单个片段，需要子类实现
+        Args:
+            messages: 消息列表
+            prompt: 用户提示词
+            system_prompt: 系统提示词
+        Returns:
+            str: 分析结果
+        """
+        pass
+    
+    def analyze(self, messages: List[dict], group_name: str, system_prompt: str = None) -> str:
+        """分析聊天记录"""
+        try:
+            if not system_prompt:
+                system_prompt = "你是一位专业的群聊分析师，简明扼要地总结重点。"
+            
+            # 按日期分段（包含必要的子分段）
+            segments = self.split_messages_by_date(messages, group_name)
+            summaries = []
+            
+            # 分析每个分段
+            for title, segment_messages in segments:
+                prompt = f"请分析以下微信群在{title}的聊天记录，并给出总结。"
+                summary = self.analyze_segment(segment_messages, prompt, system_prompt)
+                if summary:
+                    summaries.append(f"{title}：\n{summary}")
+            
+            # 合并所有分析结果
+            return "\n\n".join(summaries)
+            
+        except Exception as e:
+            print(f"AI分析失败: {str(e)}")
+            raise RuntimeError(f"AI分析失败: {str(e)}")
+
+class OpenAIClient(BaseAIClient):
+    def __init__(self):
+        config = AI_CONFIGS["openai"]
+        # OpenAI免费API的token限制约为4096，保守估计中文字符
+        super().__init__(max_segment_length=2000)  # 设置较小的分段长度
+        self.client = OpenAI(
+            api_key=config["api_key"],
+            base_url=config["base_url"]
+        )
+        self.model = config["model"]
+        self.max_tokens = config["max_tokens"]
+    
+    def analyze_segment(self, messages: List[str], prompt: str, system_prompt: str) -> str:
         """分析单个片段"""
         try:
             chat_text = "\n".join(messages)
-            print(f"发送请求到 {self.client.base_url}")
-            print(f"分析片段，长度：{len(chat_text)}")
             
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是一位信息总结大师，擅长将复杂的对话浓缩成简洁有力的总结。"
+                        "content": system_prompt
                     },
                     {
                         "role": "user",
                         "content": f"{prompt}\n\n聊天记录：\n{chat_text}"
                     }
                 ],
-                temperature=0.7,
                 max_tokens=self.max_tokens,
-                timeout=30  # 添加超时设置
+                temperature=0.7
             )
             return response.choices[0].message.content
-        except Exception as e:
-            print(f"OpenAI请求失败: {str(e)}")
-            raise RuntimeError(f"OpenAI调用失败: {str(e)}")
-    
-    def merge_summaries(self, summaries):
-        """合并多个总结"""
-        try:
-            if not summaries:
-                return "没有有效内容需要总结"
-            
-            if len(summaries) == 1:
-                return summaries[0]
-            
-            combined_summary = "\n\n".join(summaries)
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是一位信息整理专家，擅长去除重复信息，突出重点，内容清晰易读。"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""以下是多段聊天记录的总结，请整理并去除重复信息，保持要点清晰：
-
-                        {combined_summary}
-
-                        请按以下格式输出：
-                        
-                        【主要话题】
-                        1. ...
-                        
-                        【重要结论】
-                        1. ...
-                        
-                        【关键观点】
-                        1. ...
-                        
-                        【提出的问题】
-                        1. ...
-                        """
-                    }
-                ],
-                temperature=0.7,
-                max_tokens=self.max_tokens
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"合并总结失败: {str(e)}")
-            return "\n\n".join(summaries)
-    
-    def analyze(self, messages, prompt):
-        """使用OpenAI分析聊天记录"""
-        try:
-            print(f"开始分析，消息总数：{len(messages)}")
-            
-            # 1. 分段处理
-            segments = self.split_messages(messages)
-            print(f"分成 {len(segments)} 个片段")
-            
-            # 2. 分别分析每个片段
-            summaries = []
-            for i, segment in enumerate(segments):
-                print(f"分析第 {i+1}/{len(segments)} 个片段")
-                summary = self.analyze_segment(segment, prompt)
-                if summary:
-                    summaries.append(summary)
-            
-            # 3. 合并所有总结
-            print("合并所有片段的分析结果")
-            final_summary = self.merge_summaries(summaries)
-            
-            return final_summary
             
         except Exception as e:
-            print(f"OpenAI分析失败: {str(e)}")
-            raise RuntimeError(f"OpenAI分析失败: {str(e)}")
+            print(f"OpenAI分析片段失败: {str(e)}")
+            raise
 
-class DouBaoClient:
+class DouBaoClient(BaseAIClient):
     def __init__(self):
-        config = AI_CONFIGS["doubao"]  # 直接使用配置
+        config = AI_CONFIGS["doubao"]
+        # 豆包AI支持更长的上下文，可以设置更大的分段长度
+        super().__init__(max_segment_length=6000)  # 恢复到更大的分段长度
         self.api_key = config["api_key"]
         self.base_url = config["base_url"]
         self.model = config["model"]
         self.max_tokens = config["max_tokens"]
-        self.headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        print(f"初始化豆包AI客户端: model={self.model}")
     
-    def analyze(self, messages):
-        """使用豆包AI分析聊天记录"""
+    def analyze_segment(self, messages: List[str], prompt: str, system_prompt: str) -> str:
+        """分析单个片段"""
         try:
             chat_text = "\n".join(messages)
-            print(f"准备发送到豆包AI，消息长度：{len(chat_text)}")
             
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "你是一位信息总结大师，擅长将复杂的对话浓缩成简洁有力的总结。"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""请对以下聊天记录进行总结，重点关注：
-                        1. 主要讨论的话题
-                        2. 重要的结论决定
-                        3. 值得注意的观点
-                        4. 如果有问题被提出，总结这些问题
-
-                        聊天记录：
-                        {chat_text}
-                        """
-                    }
-                ],
-                "max_tokens": self.max_tokens,
-                "temperature": 0.7
-            }
-            
-            print(f"发送请求到豆包AI: {self.base_url}")
             response = requests.post(
                 self.base_url,
-                headers=self.headers,
-                json=payload,
-                timeout=30  # 添加超时设置
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": system_prompt
+                        },
+                        {
+                            "role": "user",
+                            "content": f"{prompt}\n\n聊天记录：\n{chat_text}"
+                        }
+                    ],
+                    "max_tokens": self.max_tokens,
+                    "temperature": 0.7
+                },
+                timeout=30
             )
             
-            print(f"豆包AI响应状态码: {response.status_code}")
             if response.status_code == 200:
                 result = response.json()
                 if "choices" in result and len(result["choices"]) > 0:
@@ -227,15 +222,8 @@ class DouBaoClient:
             else:
                 error = response.json().get("error", {})
                 error_msg = error.get("message", "未知错误")
-                print(f"豆包AI错误响应: {response.text}")
                 raise RuntimeError(f"豆包AI调用失败: {error_msg}")
                 
-        except requests.exceptions.Timeout:
-            print("豆包AI请求超时")
-            raise RuntimeError("请求超时，请稍后重试")
-        except requests.exceptions.RequestException as e:
-            print(f"豆包AI网络请求错误: {str(e)}")
-            raise RuntimeError(f"网络请求错误: {str(e)}")
         except Exception as e:
             print(f"豆包AI分析失败: {str(e)}")
-            raise RuntimeError(f"分析失败: {str(e)}")
+            raise

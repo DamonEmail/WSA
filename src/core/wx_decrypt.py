@@ -3,6 +3,7 @@ from pymem import Pymem, pattern, process
 from win32api import HIWORD, LOWORD, GetFileVersionInfo
 import binascii
 import struct
+from ..utils.config import Config
 
 class WeChatDecrypt:
     """微信数据库解密工具"""
@@ -96,9 +97,20 @@ class WeChatDecrypt:
     
     def get_key(self, wxid: str) -> tuple:
         """获取指定微信号的密钥"""
-        version, base = self._get_version_base()
-        offset = self._get_offset_by_wxid(wxid) - base
-        key = self._get_aes_key(base, offset)
-        
-        version_str = f"{version} " + ("(64bit)" if self._is_64bit() else "(32bit)")
-        return version_str, key 
+        try:
+            version, base = self._get_version_base()
+            offset = self._get_offset_by_wxid(wxid) - base
+            key = self._get_aes_key(base, offset)
+            
+            # 保存密钥供后续使用
+            self._key = key
+            
+            # 保存到配置文件
+            config = Config()
+            config.save_decrypt_info(wxid, version, key)
+            
+            version_str = f"{version} " + ("(64bit)" if self._is_64bit() else "(32bit)")
+            return version_str, key
+            
+        except Exception as e:
+            raise RuntimeError(f"获取密钥失败: {str(e)}")
