@@ -397,9 +397,9 @@ class WeChatAnalyzerGUI:
                         create_time = msg['create_time']
                         
                         # 打印一些调试信息
-                        print(f"处理第{i+1}条消息:")
-                        print(f"  - sender: {sender}")
-                        print(f"  - create_time: {create_time}")
+                        # print(f"处理第{i+1}条消息:")
+                        # print(f"  - sender: {sender}")
+                        # print(f"  - create_time: {create_time}")
                         # print(f"  - content: {content[:50]}...")  # 只显示前50个字符
                         
                         if self.filter_message(content, [], sender, []):

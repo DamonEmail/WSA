@@ -61,76 +61,104 @@ class WeChatDBReader:
             raise ValueError(f"无法打开数据库 {db_path}：{str(e)}")
     
     def get_chatroom_id(self, room_name):
-        """根据群名获取群ID
-        
-        Returns:
-            list: [(chatroom_id, msg_db), ...] 所有匹配的群ID和对应的数据库路径
-        """
-        print(f"尝试查找群：{room_name}")
-        
-        if not self.msg_dbs:
-            raise ValueError("未找到消息数据库")
-        
-        # 存储所有找到的群ID和对应的数据库
+        """根据群名获取群ID"""
+        print(f"\n尝试查找群：{room_name}")
         found_groups = []
         
-        # 遍历所有消息数据库查找群
-        for msg_db in self.msg_dbs:
-            cursor = sqlite3.connect(msg_db).cursor()
+        try:
+            # 1. 先从联系人数据库查找
+            conn = sqlite3.connect(self.contact_db)
+            cursor = conn.cursor()
             
-            try:
-                # 1. 获取所有群聊ID
-                cursor.execute("""
-                    SELECT DISTINCT StrTalker 
-                    FROM MSG 
-                    WHERE StrTalker LIKE '%chatroom'
-                """)
-                chatrooms = cursor.fetchall()
-                print(f"在数据库 {msg_db} 中找到 {len(chatrooms)} 个群聊")
-                
-                # 2. 先尝试从系统消息中查找
-                for room_id in chatrooms:
-                    room_id = room_id[0]
-                    cursor.execute("""
-                        SELECT StrContent 
-                        FROM MSG 
-                        WHERE StrTalker = ? 
-                        AND Type = 10000
-                        AND StrContent LIKE ?
-                    """, (room_id, f"%{room_name}%"))
-                    result = cursor.fetchone()
-                    if result:
-                        print(f"在数据库 {msg_db} 的系统消息中找到群: {room_name}")
-                        found_groups.append((room_id, msg_db))
-                        continue  # 继续搜索其他群
-                    
-                    # 3. 尝试从普通消息中查找
-                    cursor.execute("""
-                        SELECT StrContent 
-                        FROM MSG 
-                        WHERE StrTalker = ? 
-                        AND StrContent LIKE ?
-                        LIMIT 1
-                    """, (room_id, f"%{room_name}%"))
-                    result = cursor.fetchone()
-                    if result:
-                        print(f"在数据库 {msg_db} 的消息内容中找到群: {room_name}")
-                        found_groups.append((room_id, msg_db))
-                
-            finally:
-                cursor.close()
-        
-        if not found_groups:
-            raise ValueError(f"未找到群「{room_name}」")
-        
-        # 如果找到多个匹配的群，打印信息
-        if len(found_groups) > 1:
-            print(f"找到 {len(found_groups)} 个匹配的群:")
+            # 查找匹配的群
+            cursor.execute("""
+                SELECT UserName, NickName, Remark, Type
+                FROM Contact 
+                WHERE (Type & 0x2) != 0  -- 群聊类型
+                AND (NickName LIKE ? OR Remark LIKE ?)
+            """, (f"%{room_name}%", f"%{room_name}%"))
+            
+            matched_groups = cursor.fetchall()
+            print("\n=== 匹配的群聊 ===")
+            for group in matched_groups:
+                group_id = group[0]
+                # 2. 查找该群ID在所有消息数据库中的分布
+                for msg_db in self.msg_dbs:
+                    try:
+                        msg_conn = sqlite3.connect(msg_db)
+                        msg_cursor = msg_conn.cursor()
+                        
+                        # 检查该群在数据库中是否有消息
+                        msg_cursor.execute("""
+                            SELECT MAX(CreateTime) as latest_time,
+                                   COUNT(*) as msg_count
+                            FROM MSG
+                            WHERE StrTalker = ?
+                        """, (group_id,))
+                        
+                        result = msg_cursor.fetchone()
+                        if result and result[1] > 0:  # 如果有消息
+                            latest_time = datetime.fromtimestamp(result[0])
+                            print(f"在 {os.path.basename(msg_db)} 中找到消息:")
+                            print(f"最新消息时间: {latest_time}")
+                            print(f"消息数量: {result[1]}")
+                            found_groups.append((group_id, msg_db))
+                            # 删除 break，继续检查其他数据库
+                            
+                    finally:
+                        msg_cursor.close()
+                        msg_conn.close()
+            
+            if not found_groups:
+                # 如果通过群名没找到，尝试从消息内容中查找
+                print("\n通过消息内容查找群...")
+                for msg_db in self.msg_dbs:
+                    try:
+                        msg_conn = sqlite3.connect(msg_db)
+                        msg_cursor = msg_conn.cursor()
+                        
+                        # 查找包含群名的消息
+                        msg_cursor.execute("""
+                            SELECT DISTINCT StrTalker,
+                                   MAX(CreateTime) as latest_time,
+                                   COUNT(*) as msg_count
+                            FROM MSG 
+                            WHERE StrTalker LIKE '%@chatroom'
+                            AND StrContent LIKE ?
+                            GROUP BY StrTalker
+                        """, (f"%{room_name}%",))
+                        
+                        results = msg_cursor.fetchall()
+                        for room_id, latest_time, msg_count in results:
+                            if not any(g[0] == room_id for g in found_groups):
+                                found_groups.append((room_id, msg_db))
+                                print(f"\n通过消息内容找到群:")
+                                print(f"群ID: {room_id}")
+                                print(f"数据库: {os.path.basename(msg_db)}")
+                                print(f"消息数量: {msg_count}")
+                                print(f"最新消息: {datetime.fromtimestamp(latest_time)}")
+                                
+                    finally:
+                        msg_cursor.close()
+                        msg_conn.close()
+            
+            if not found_groups:
+                raise ValueError(f"未找到群「{room_name}」")
+            
+            # 按时间排序，确保返回最新的数据库
+            found_groups.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
+            
+            print(f"\n=== 查找结果 ===")
+            print(f"共找到 {len(found_groups)} 个匹配的群:")
             for group_id, db in found_groups:
-                print(f"- 群ID: {group_id}, 数据库: {db}")
-        
-        # 返回所有找到的群
-        return found_groups
+                print(f"群ID: {group_id}")
+                print(f"数据库: {os.path.basename(db)}")
+                print("-" * 30)
+            
+            return found_groups
+                
+        except Exception as e:
+            raise ValueError(f"查找群失败: {str(e)}")
     
     def get_user_info(self, user_id: str) -> str:
         """获取用户信息，优先使用缓存"""
@@ -236,11 +264,11 @@ class WeChatDBReader:
                 latest_record = records[0]
                 latest_time = datetime.fromtimestamp(latest_record[0])
                 latest_content = latest_record[1]
-                print(f"\n最近一条消息信息:")
-                print(f"时间: {latest_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f"内容: {latest_content[:100]}..." if len(latest_content) > 100 else f"内容: {latest_content}")
-                print(f"消息类型: {latest_record[2]}")
-                print("=" * 50)
+                # print(f"\n最近一条消息信息:")
+                # print(f"时间: {latest_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                # print(f"内容: {latest_content[:100]}..." if len(latest_content) > 100 else f"内容: {latest_content}")
+                # print(f"消息类型: {latest_record[2]}")
+                # print("=" * 50)
             
             # 在内存中筛选时间范围
             filtered_records = []
