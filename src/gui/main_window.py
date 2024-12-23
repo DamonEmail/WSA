@@ -14,7 +14,7 @@ class WeChatAnalyzerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("微信群聊分析工具")
-        self.root.geometry("800x700")
+        self.root.geometry("900x700")
         
         # 初始化变量
         self.ai_type = tk.StringVar(value="openai")
