@@ -272,7 +272,7 @@ class WeChatAnalyzerGUI:
         )
         self.analyze_button.pack(side=tk.LEFT, padx=10)
         
-        # 提示词输入框 - 改用 Text 组件替代 Entry
+        # 提示词输入框 - 改用 Text 组��替代 Entry
         prompt_frame = ttk.Frame(second_row)
         prompt_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
         
@@ -348,130 +348,75 @@ class WeChatAnalyzerGUI:
     def run_analysis(self):
         """运行群消息分析"""
         try:
-            # 显示简单的进度提示
-            self.output_text.delete(1.0, tk.END)
-            self.output_text.insert(tk.END, "正在分析中...\n")
+            def update_ui(text):
+                """在主线程中更新UI"""
+                self.output_text.delete(1.0, tk.END)
+                self.output_text.insert(tk.END, text)
+                
+            def show_error(title, message):
+                """在主线程中显示错误"""
+                self.root.after(0, lambda: self.show_message(title, message, "error"))
+                
+            def update_button():
+                """在主线程中更新按钮状态"""
+                self.analyze_button.configure(text="开始分析", state="normal")
             
-            print("开始分析群聊记录...")
-            db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "database")
-            print(f"使用数据库目录：{db_path}")
-            
-            # 获取群名和AI类型
-            ai_type = self.ai_type.get()
-            group_name = self.group_name.get()
-            days = int(self.time_range.get())
-            print(f"分析群「{group_name}」最近 {days} 天的记录")
+            # 在主线程中更新初始状态
+            self.root.after(0, lambda: update_ui("正在分析中...\n"))
             
             try:
                 # 创建数据库读取器
+                db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "database")
                 reader = WeChatDBReader(db_path)
                 
                 # 获取聊天记录
-                chat_records = reader.analyze_group(group_name, days=days)
+                chat_records = reader.analyze_group(self.group_name.get(), days=int(self.time_range.get()))
                 record_count = len(chat_records)
-                print(f"获取到 {record_count} 条聊天记录")
                 
-                # 更新分析提示
-                self.output_text.delete(1.0, tk.END)
+                # 在主线程中更新进度提示
                 if record_count > 800:
-                    self.output_text.insert(tk.END, "正在分析中(聊天记录较多，可能需要较长时间)...\n"
-                                                  f"共发现 {record_count} 条记录，请耐心等待\n")
+                    self.root.after(0, lambda: update_ui(
+                        "正在分析中(聊天记录较多，可能需要较长时间)...\n"
+                        f"共发现 {record_count} 条记录，请耐心等待\n"
+                    ))
                 else:
-                    self.output_text.insert(tk.END, f"正在分析 {record_count} 条聊天记录...\n")
+                    self.root.after(0, lambda: update_ui(f"正在分析 {record_count} 条聊天记录...\n"))
                 
                 # 过滤消息
                 filtered_records = []
-                print("\n开始处理消息记录...")
-                for i, msg in enumerate(chat_records):
-                    try:
-                        # 检查必要字段
-                        if 'content' not in msg:
-                            print(f"警告: 第{i+1}条消息缺少 content 字段")
-                            continue
-                        if 'create_time' not in msg:
-                            print(f"警告: 第{i+1}条消息缺少 create_time 字段")
-                            continue
-                        
-                        content = msg['content']
-                        sender = msg.get('sender', 'unknown')
-                        create_time = msg['create_time']
-                        
-                        # 打印一些调试信息
-                        # print(f"处理第{i+1}条消息:")
-                        # print(f"  - sender: {sender}")
-                        # print(f"  - create_time: {create_time}")
-                        # print(f"  - content: {content[:50]}...")  # 只显示前50个字符
-                        
-                        if self.filter_message(content, [], sender, []):
-                            filtered_msg = {
-                                'content': content,
-                                'sender': sender,
-                                'create_time': create_time
-                            }
-                            filtered_records.append(filtered_msg)
-                            
-                    except Exception as e:
-                        print(f"警告: 处理第{i+1}条消息时出错: {str(e)}")
-                        print(f"消息内容: {msg}")
-                        continue
+                for msg in chat_records:
+                    if self.filter_message(msg['content'], [], msg.get('sender', 'unknown'), []):
+                        filtered_records.append(msg)
                 
-                print(f"\n消息过滤完成，共保留 {len(filtered_records)} 条记录")
                 if not filtered_records:
                     raise ValueError("过滤后没有有效的消息")
                 
-                # 调用AI进行分析
-                try:
-                    # 获取提示词 - 修改获取文本的方式
-                    system_prompt = self.prompt_input.get("1.0", tk.END).strip() if self.prompt_type.get() == "custom" else self.default_prompt
-                    
-                    if ai_type == "openai":
-                        client = OpenAIClient()
-                        summary = client.analyze(
-                            messages=filtered_records,
-                            group_name=group_name,
-                            system_prompt=system_prompt  # 传入系统提示词
-                        )
-                    else:
-                        client = DouBaoClient()
-                        summary = client.analyze(
-                            messages=filtered_records,
-                            group_name=group_name,
-                            system_prompt=system_prompt  # 传入系统提示词
-                        )
-                    
-                    print("AI分析完成")
-                    
-                    # 显示分析结果
-                    if summary:
-                        self.output_text.delete(1.0, tk.END)
-                        self.output_text.insert(tk.END, summary)
-                    else:
-                        raise RuntimeError("AI返回的分析结果为空")
-                    
-                except Exception as e:
-                    print(f"AI���用失败：{str(e)}")
-                    error_msg = f"AI分析失败：{str(e)}"
-                    self.show_message("错误", error_msg, "error")
-                    self.output_text.delete(1.0, tk.END)
-                    self.output_text.insert(tk.END, f"分析失败：{error_msg}")
-                    
-            except ValueError as e:
-                print(f"数据库读取失败：{str(e)}")
-                error_msg = f"读取数据库失败：{str(e)}\n请确保已经成功解密数据库。"
-                self.show_message("错误", error_msg, "error")
-                self.output_text.delete(1.0, tk.END)
-                self.output_text.insert(tk.END, f"分析失败：{error_msg}")
+                # 获取提示词
+                system_prompt = self.prompt_input.get("1.0", tk.END).strip() if self.prompt_type.get() == "custom" else self.default_prompt
                 
-        except Exception as e:
-            error_msg = str(e)
-            print(f"分析过程出错：{error_msg}")
-            self.show_message("错误", f"分析过程出错：{error_msg}", "error")
-            self.output_text.delete(1.0, tk.END)
-            self.output_text.insert(tk.END, f"分析失败：{error_msg}")
-            
+                # 调用AI分析
+                ai_type = self.ai_type.get()
+                if ai_type == "openai":
+                    client = OpenAIClient()
+                else:
+                    client = DouBaoClient()
+                    
+                summary = client.analyze(
+                    messages=filtered_records,
+                    group_name=self.group_name.get(),
+                    system_prompt=system_prompt
+                )
+                
+                # 在主线程中显示结果
+                self.root.after(0, lambda: update_ui(summary))
+                
+            except Exception as e:
+                error_msg = str(e)
+                self.root.after(0, lambda: show_error("错误", f"分析失败：{error_msg}"))
+                
         finally:
-            # 恢复按钮状态
-            self.root.after(0, lambda: self.analyze_button.configure(text="开始分析", state="normal"))
+            # 在主线程中恢复按钮状态
+            self.root.after(0, update_button)
     
     def copy_summary(self):
         """复制总结内容"""
