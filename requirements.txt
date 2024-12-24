@@ -7,4 +7,6 @@ openai>=1.0.0
 python-dotenv
 blackboxprotobuf
 requests
-pyinstaller 
+pyinstaller
+tkcalendar>=1.6.1
+babel 

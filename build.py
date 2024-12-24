@@ -1,52 +1,24 @@
 import PyInstaller.__main__
 import os
-import shutil
 
-def build():
-    """打包应用"""
-    # 获取项目根目录
-    root_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # 配置文件路径
-    config_dir = os.path.join(root_dir, "config")
-    icon_path = os.path.join(root_dir, "assets", "icon.ico")
-    
-    # 创建发布目录
-    release_dir = os.path.join(root_dir, "release")
-    os.makedirs(release_dir, exist_ok=True)
-    
-    # PyInstaller参数
-    params = [
-        "run.py",                           # 修改入口文件名
-        "--name=WeChatAnalyzer",            # 生成的exe名称
-        "--onefile",                        # 打包成单个文件
-        "--windowed",                       # 使用GUI模式
-        f"--add-data={config_dir};config",  # 添加配置文件
-        "--clean",                          # 清理临时文件
-        "--noconfirm",                      # 不确认覆盖
-        f"--distpath={release_dir}",        # 指定输出目录
-        f"--icon={icon_path}",              # 添加图标
-    ]
-    
-    # 运行打包
-    PyInstaller.__main__.run(params)
-    
-    # 复制必要的文件到发布目录
-    readme_path = os.path.join(root_dir, "README.md")
-    if os.path.exists(readme_path):
-        shutil.copy2(readme_path, release_dir)
-    
-    # 创建数据库目录
-    os.makedirs(os.path.join(release_dir, "database"), exist_ok=True)
-    
-    print("\n打包完成！")
-    print(f"发布文件在: {release_dir}")
-    print("使用说明：")
-    print("1. 确保微信已经登录")
-    print("2. 运行 WeChatAnalyzer.exe")
-    print("3. 输入微信号并获取密钥")
-    print("4. 点击解密数据库")
-    print("5. 解密后的数据库文件会保存在database目录")
+PyInstaller.__main__.run([
+    'run.py',
+    '--name=WeChatAnalyzer',
+    '--onefile',
+    '--noconsole',
+    '--clean',  # 清理临时文件
+    '--exclude=config/backup',  # 排除备份目录
+    '--exclude=database',  # 排除数据库目录
+    '--exclude=*.db',  # 排除数据库文件
+    '--add-data=config/ai_config.example.json;config',  # 添加必要的配置文件
+    '--add-data=config/decrypt_config.json;config',
+    # 添加隐藏导入
+    '--hidden-import=babel.numbers',
+    '--hidden-import=babel.dates',
+    '--hidden-import=babel.localedata',
+    '--workpath=build',  # 指定构建目录
+    '--distpath=dist',  # 指定输出目录
+])
 
-if __name__ == "__main__":
-    build() 
+print("\n打包完成！")
+print("文件位置: ./dist/WeChatAnalyzer.exe") 

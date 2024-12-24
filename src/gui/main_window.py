@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
-from datetime import datetime
+from datetime import datetime, date
 import os
 import re
 from ..utils.ai_client import OpenAIClient, DouBaoClient
@@ -9,9 +9,22 @@ from src.core.db_reader import WeChatDBReader
 from src.utils.config import Config
 from src.core.wx_decrypt import WeChatDecrypt
 from ..core.db_decrypt import DBDecrypt
+import time
+from tkcalendar import DateEntry  # 需要先安装: pip install tkcalendar
 
 class WeChatAnalyzerGUI:
     def __init__(self, root):
+        """初始化界面"""
+        # 设置编码
+        import locale
+        try:
+            locale.setlocale(locale.LC_ALL, 'zh_CN.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_ALL, 'Chinese_China.936')
+            except locale.Error:
+                print("警告：无法设置中文编码，可能会影响显示")
+        
         self.root = root
         self.root.title("微信群聊分析工具")
         self.root.geometry("900x700")
@@ -146,7 +159,7 @@ class WeChatAnalyzerGUI:
                             progress_dialog.set_progress(40)
                         elif "开始解密数据库" in msg:
                             progress_dialog.set_progress(50)
-                        elif "联系人数据库解密成功" in msg:
+                        elif "联系人数据解密成功" in msg:
                             progress_dialog.set_progress(70)
                         elif "MSG" in msg and "解密成功" in msg:
                             # 剩余30%平均分配给消息数据库
@@ -257,11 +270,38 @@ class WeChatAnalyzerGUI:
         # 时间范围选择
         time_frame = ttk.Frame(second_row)
         time_frame.pack(side=tk.LEFT, padx=5)
-        ttk.Label(time_frame, text="时间范围:").pack(side=tk.LEFT)
-        self.time_range = tk.StringVar(value="1")
-        ttk.Radiobutton(time_frame, text="最近24小时", variable=self.time_range, value="1").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(time_frame, text="最近3天", variable=self.time_range, value="3").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(time_frame, text="最近7天", variable=self.time_range, value="7").pack(side=tk.LEFT, padx=5)
+        
+        # 开始日期
+        ttk.Label(time_frame, text="开始日期:").pack(side=tk.LEFT)
+        self.start_date = DateEntry(
+            time_frame,
+            width=12,
+            background='darkblue',
+            foreground='white',
+            borderwidth=2,
+            date_pattern='yyyy-mm-dd',
+            maxdate=date.today(),  # 最大日期为今天
+            state="readonly"
+        )
+        self.start_date.pack(side=tk.LEFT, padx=5)
+        
+        # 结束日期
+        ttk.Label(time_frame, text="结束日期:").pack(side=tk.LEFT)
+        self.end_date = DateEntry(
+            time_frame,
+            width=12,
+            background='darkblue',
+            foreground='white',
+            borderwidth=2,
+            date_pattern='yyyy-mm-dd',
+            maxdate=date.today(),  # 最大日期为今天
+            state="readonly"
+        )
+        self.end_date.pack(side=tk.LEFT, padx=5)
+        
+        # 绑定日期变更事件
+        self.start_date.bind("<<DateEntrySelected>>", self.validate_dates)
+        self.end_date.bind("<<DateEntrySelected>>", self.validate_dates)
         
         # 分析按钮
         self.analyze_button = ttk.Button(
@@ -272,7 +312,7 @@ class WeChatAnalyzerGUI:
         )
         self.analyze_button.pack(side=tk.LEFT, padx=10)
         
-        # 提示词输入框 - 改用 Text 组��替代 Entry
+        # 提示词输入框 - 改用 Text 组代 Entry
         prompt_frame = ttk.Frame(second_row)
         prompt_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=5)
         
@@ -330,7 +370,7 @@ class WeChatAnalyzerGUI:
             self.db_path.set(folder)
     
     def start_analysis(self):
-        """开始分析群消息"""
+        """���始分析群消息"""
         group_name = self.group_name.get().strip()
         if not group_name:
             self.show_message("错误", "请输入群名称！", "error")
@@ -352,28 +392,66 @@ class WeChatAnalyzerGUI:
                 """在主线程中更新UI"""
                 self.output_text.delete(1.0, tk.END)
                 self.output_text.insert(tk.END, text)
-                
+            
             def show_error(title, message):
                 """在主线程中显示错误"""
                 self.root.after(0, lambda: self.show_message(title, message, "error"))
-                
+            
             def update_button():
                 """在主线程中更新按钮状态"""
                 self.analyze_button.configure(text="开始分析", state="normal")
-            
-            # 在主线程中更新初始状态
-            self.root.after(0, lambda: update_ui("正在分析中...\n"))
             
             try:
                 # 创建数据库读取器
                 db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "database")
                 reader = WeChatDBReader(db_path)
                 
+                # 获取日期范围
+                start_date = self.start_date.get_date()
+                end_date = self.end_date.get_date()
+                
+                # 计算日期差
+                days = (end_date - start_date).days + 1
+                
                 # 获取聊天记录
-                chat_records = reader.analyze_group(self.group_name.get(), days=int(self.time_range.get()))
+                chat_records = reader.analyze_group(
+                    self.group_name.get(),
+                    start_date=start_date,
+                    end_date=end_date
+                )
                 record_count = len(chat_records)
                 
-                # 在主线程中更新进度提示
+                # 在主线程中显示确认对话框并等待结果
+                dialog_result = [None]  # 使用列表存储结果
+                
+                def show_dialog():
+                    dialog = AnalysisConfirmDialog(
+                        parent=self.root,
+                        record_count=record_count,
+                        days=int(days),
+                        ai_type=self.ai_type.get()  # 传入当前选择的AI类型
+                    )
+                    dialog_result[0] = dialog
+                
+                # 在主线程中创建对话框
+                self.root.after(0, show_dialog)
+                
+                # 等待对话框创建完成
+                while dialog_result[0] is None:
+                    time.sleep(0.1)
+                
+                # 等待对话框关闭
+                self.root.wait_window(dialog_result[0].dialog)
+                
+                # 如果用户取消，恢复UI状态并返回
+                if not dialog_result[0].result:
+                    self.root.after(0, lambda: [
+                        update_button(),  # 恢复按钮状态
+                        update_ui("")     # 清空本框
+                    ])
+                    return
+                
+                # 更新进度提示
                 if record_count > 800:
                     self.root.after(0, lambda: update_ui(
                         "正在分析中(聊天记录较多，可能需要较长时间)...\n"
@@ -386,7 +464,11 @@ class WeChatAnalyzerGUI:
                 filtered_records = []
                 for msg in chat_records:
                     if self.filter_message(msg['content'], [], msg.get('sender', 'unknown'), []):
-                        filtered_records.append(msg)
+                        filtered_records.append({
+                            'content': msg['content'],
+                            'sender': msg.get('sender', 'unknown'),
+                            'create_time': msg['create_time']
+                        })
                 
                 if not filtered_records:
                     raise ValueError("过滤后没有有效的消息")
@@ -437,13 +519,13 @@ class WeChatAnalyzerGUI:
         if not message or message.isspace():
             return False
 
-        # 过滤规则
+        # 过规则
         filter_patterns = [
             r"<[^>]+>",  # XML标签
             r"\[动画表情\]",
             r"\[表情\]",
             r"\[图片\]",
-            r"\[文件\]",
+            r"\[文\]",
             r"\[视频\]",
             r"\[语音\]",
             r"\[通话\]",
@@ -524,6 +606,25 @@ class WeChatAnalyzerGUI:
             self.prompt_input.configure(state="normal")
             self.prompt_input.delete("1.0", tk.END)
 
+    def validate_dates(self, event=None):
+        """验证并调整日期选择"""
+        start = self.start_date.get_date()
+        end = self.end_date.get_date()
+        today = date.today()
+        
+        # 确保结束日期不早于开始日期
+        if end < start:
+            self.end_date.set_date(start)
+        
+        # 确保开始日期不晚于今天
+        if start > today:
+            self.start_date.set_date(today)
+            self.end_date.set_date(today)
+        
+        # 确保结束日期不晚于今天
+        if end > today:
+            self.end_date.set_date(today)
+
 class DecryptProgressDialog:
     def __init__(self, parent):
         self.dialog = tk.Toplevel(parent)
@@ -532,7 +633,7 @@ class DecryptProgressDialog:
         self.dialog.geometry("500x450")
         self.dialog.transient(parent)
         
-        # 设置弹窗位置为主窗口中心
+        # 置弹窗位置为主窗口中心
         self.center_window(parent)
         
         # 创建主框架
@@ -543,12 +644,12 @@ class DecryptProgressDialog:
         text_frame = ttk.Frame(main_frame)
         text_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        # 创建文本框和滚动条
+        # 创建文本和滚动条
         self.text = tk.Text(
             text_frame, 
             wrap=tk.WORD, 
             height=14,
-            font=('微软雅', 10),
+            font=('微软雅黑', 10),
             background='#f0f0f0'
         )
         self.text.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
@@ -581,7 +682,7 @@ class DecryptProgressDialog:
         )
         self.ok_button.pack(pady=5)
         
-        # 初始时禁用关闭按钮
+        # 初始时禁用闭按钮
         self.dialog.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # 记录是否完成
@@ -606,7 +707,7 @@ class DecryptProgressDialog:
         line_start = f"{end_pos} linestart"
         line_end = f"{end_pos} lineend + 1c"
         
-        # 检查并应用标签
+        # 检查应用标签
         if '✅' in text:
             self.text.tag_add('success', line_start, line_end)
         elif '✨' in text and '🎉' in text and '💡' in text:
@@ -618,7 +719,7 @@ class DecryptProgressDialog:
         elif text.startswith('正在'):
             self.text.tag_add('info', line_start, line_end)
         
-        self.text.see(tk.END)  # 滚动到底
+        self.text.see(tk.END)  # 滚动到末尾
     
     def complete(self, final_text):
         """完成解密"""
@@ -645,7 +746,7 @@ class DecryptProgressDialog:
         dialog_width = 500
         dialog_height = 450
         
-        # 计算居中位置
+        # 计算居位置
         x = parent_x + (parent_width - dialog_width) // 2
         y = parent_y + (parent_height - dialog_height) // 2
         
@@ -665,3 +766,123 @@ class DecryptProgressDialog:
         """增加进度值"""
         self.progress = min(100, self.progress + increment)
         self.update_title()
+
+class AnalysisConfirmDialog:
+    def __init__(self, parent, record_count: int, days: int, ai_type: str):
+        self.parent = parent
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("分析确认")
+        self.dialog.geometry("400x320")
+        self.dialog.transient(parent)
+        
+        # 设置初始结果
+        self.result = False
+        
+        # 居中显示
+        self.center_window(parent)
+        
+        # 创建主框架
+        main_frame = ttk.Frame(self.dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 计算预估值 - 基于实际数据优化
+        avg_chars_per_msg = 25  # 每条消息平均25字
+        total_chars = record_count * avg_chars_per_msg  # 预估总字符数
+        
+        # 基于实际数据的速度：1553字/2278tokens ≈ 0.68字/token
+        chars_per_second = 600
+        base_time_seconds = total_chars / chars_per_second
+        
+        # 根据AI类型计算预估token
+        if ai_type == "openai":
+            # OpenAI: 1553字/2278tokens ≈ 1.47tokens/字
+            estimated_tokens = int(total_chars * 1.47 * 1.05)  # 增加5%的buffer
+        else:
+            # 豆包AI: 保持原来的比例 0.61tokens/字
+            estimated_tokens = int(total_chars * 0.61 * 1.05)
+        
+        estimated_time_seconds = int(base_time_seconds * 1.05)  # 增加5%的buffer
+        
+        # 转换为分钟和秒
+        estimated_minutes = estimated_time_seconds // 60
+        estimated_seconds = estimated_time_seconds % 60
+        
+        # 显示信息
+        time_range_text = (
+            f"{estimated_minutes}分{estimated_seconds}秒" if estimated_minutes > 0
+            else f"{estimated_seconds}秒"
+        )
+        max_time_text = (
+            f"{int(estimated_minutes*1.1)}分{int(estimated_seconds*1.1)}秒" if estimated_minutes > 0
+            else f"{int(estimated_seconds*1.1)}秒"
+        )
+        
+        info_text = (
+            f"将分析最近 {days} 天的聊天记录：\n\n"
+            f"• 消息总数：{record_count:,} 条\n"
+            f"• 预计字符：{total_chars:,} 字\n"
+            f"• 预计Token：{estimated_tokens:,}\n"
+            f"• 预计耗时：{time_range_text} ~ {max_time_text}\n\n"
+            "是否继续？"
+        )
+        
+        info_label = ttk.Label(
+            main_frame, 
+            text=info_text,
+            justify=tk.LEFT,
+            wraplength=350
+        )
+        info_label.pack(pady=10)
+        
+        # 按钮框架
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(side=tk.BOTTOM, pady=10)
+        
+        # 确定按钮
+        self.ok_button = ttk.Button(
+            button_frame,
+            text="开始分析",
+            command=self.confirm,
+            width=15
+        )
+        self.ok_button.pack(side=tk.LEFT, padx=5)
+        
+        # 取消按钮
+        self.cancel_button = ttk.Button(
+            button_frame,
+            text="取消",
+            command=self.cancel,
+            width=15
+        )
+        self.cancel_button.pack(side=tk.LEFT, padx=5)
+        
+        # 设置模态对话框
+        self.dialog.grab_set()
+        
+        # 处理窗口关闭
+        self.dialog.protocol("WM_DELETE_WINDOW", self.cancel)
+    
+    def confirm(self):
+        """确认分析"""
+        self.result = True
+        self.dialog.destroy()
+    
+    def cancel(self):
+        """取消分析"""
+        self.result = False
+        self.dialog.destroy()
+    
+    def center_window(self, parent):
+        """居中显示窗口"""
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        width = 400
+        height = 320
+        
+        x = parent_x + (parent_width - width) // 2
+        y = parent_y + (parent_height - height) // 2
+        
+        self.dialog.geometry(f"{width}x{height}+{x}+{y}")

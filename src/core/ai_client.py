@@ -1,6 +1,7 @@
 import requests
 from typing import List, Dict, Any
 from ..utils.config import Config
+import locale
 
 class AIClient:
     """AI接口客户端"""
@@ -16,11 +17,30 @@ class AIClient:
             "Authorization": f"Bearer {self.api_key}"
         }
     
-    def analyze_chat(self, messages: List[str]) -> Dict[str, Any]:
+    def analyze_chat(self, messages, start_date=None, end_date=None):
         """分析聊天记录"""
-        chat_text = "\n".join(messages)
-        
         try:
+            # 设置默认编码
+            locale.setlocale(locale.LC_ALL, 'zh_CN.UTF-8')  # 设置中文编码
+            
+            # 准备分析内容
+            content = "请分析以下聊天记录的特点和规律：\n\n"
+            
+            # 添加日期范围信息
+            if start_date and end_date:
+                content += f"时间范围：{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}\n\n"
+            
+            # 添加消息内容
+            for msg in messages:
+                try:
+                    time_str = msg['time'].strftime('%Y-%m-%d %H:%M:%S')
+                    content += f"{time_str} {msg['sender']}: {msg['content']}\n"
+                except UnicodeEncodeError:
+                    # 如果遇到编码问题，尝试使用 UTF-8
+                    content += f"{time_str} {msg['sender']}: {msg['content'].encode('utf-8', 'ignore').decode('utf-8')}\n"
+                
+            chat_text = "\n".join(messages)
+            
             payload = {
                 "model": self.model,
                 "messages": [

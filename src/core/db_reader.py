@@ -3,7 +3,7 @@ import os
 import time
 from ..utils.config import Config
 from ..utils.message_parser import get_BytesExtra, get_sender_name
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 class WeChatDBReader:
     def __init__(self, db_path):
@@ -45,23 +45,32 @@ class WeChatDBReader:
     
     def _verify_db_file(self, db_path):
         """验证数据库文件是否可用"""
-        if not os.path.exists(db_path):
-            raise ValueError(f"数据库文件不存在：{db_path}")
-            
-        # 尝试打开数据库
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = cursor.fetchall()
-            print(f"数据库 {db_path} 中的表：{tables}")  # 调试信息
+            
+            # 检查表结构
+            cursor.execute("PRAGMA table_info(MSG)")
+            columns = cursor.fetchall()
+            print(f"\n===== MSG表结构 =====")
+            for col in columns:
+                print(f"列名: {col[1]}, 类型: {col[2]}")
+            print("====================")
+            
+            return True
+        except sqlite3.Error as e:
+            raise ValueError(f"数据库验证失败: {str(e)}")
+        finally:
             cursor.close()
             conn.close()
-        except sqlite3.Error as e:
-            raise ValueError(f"无法打开数据库 {db_path}：{str(e)}")
     
-    def get_chatroom_id(self, room_name):
-        """根据群名获取群ID"""
+    def get_chatroom_id(self, room_name: str) -> list:
+        """根据群名获取群ID
+        Args:
+            room_name: 群名称（支持部分匹配）
+        Returns:
+            List[Tuple[str, str]]: [(群ID, 数据库路径), ...]
+        """
         print(f"\n尝试查找群：{room_name}")
         found_groups = []
         
@@ -72,93 +81,53 @@ class WeChatDBReader:
             
             # 查找匹配的群
             cursor.execute("""
-                SELECT UserName, NickName, Remark, Type
+                SELECT UserName, NickName, Remark 
                 FROM Contact 
-                WHERE (Type & 0x2) != 0  -- 群聊类型
-                AND (NickName LIKE ? OR Remark LIKE ?)
+                WHERE (NickName LIKE ? OR Remark LIKE ?) 
+                AND Type = 2  -- 群聊类型
+                ORDER BY NickName
             """, (f"%{room_name}%", f"%{room_name}%"))
             
-            matched_groups = cursor.fetchall()
-            print("\n=== 匹配的群聊 ===")
-            for group in matched_groups:
-                group_id = group[0]
-                # 2. 查找该群ID在所有消息数据库中的分布
+            groups = cursor.fetchall()
+            print(f"找到 {len(groups)} 个可能匹配的群聊")
+            
+            # 2. 遍历每个群，找到所有包含其消息的数据库
+            for group in groups:
+                chatroom_id = group[0]  # UserName 作为群ID
+                chatroom_name = group[2] or group[1]  # 优先使用备注名
+                
+                # 在每个消息数据库中查找
                 for msg_db in self.msg_dbs:
                     try:
                         msg_conn = sqlite3.connect(msg_db)
                         msg_cursor = msg_conn.cursor()
                         
-                        # 检查该群在数据库中是否有消息
+                        # 验证群ID是否在此数据库中
                         msg_cursor.execute("""
-                            SELECT MAX(CreateTime) as latest_time,
-                                   COUNT(*) as msg_count
-                            FROM MSG
-                            WHERE StrTalker = ?
-                        """, (group_id,))
+                            SELECT COUNT(*) FROM MSG 
+                            WHERE StrTalker = ? 
+                            LIMIT 1
+                        """, (chatroom_id,))
                         
-                        result = msg_cursor.fetchone()
-                        if result and result[1] > 0:  # 如果有消息
-                            latest_time = datetime.fromtimestamp(result[0])
-                            print(f"在 {os.path.basename(msg_db)} 中找到消息:")
-                            print(f"最新消息时间: {latest_time}")
-                            print(f"消息数量: {result[1]}")
-                            found_groups.append((group_id, msg_db))
-                            # 删除 break，继续检查其他数据库
-                            
+                        if msg_cursor.fetchone()[0] > 0:
+                            found_groups.append((chatroom_id, msg_db))
+                            print(f"✓ 群「{chatroom_name}」({chatroom_id}) 的消息在数据库: {msg_db}")
+                            # 移除这里的 break，继续查找其他数据库
+                    
+                    except sqlite3.Error as e:
+                        print(f"检查数据库 {msg_db} 时出错: {str(e)}")
                     finally:
                         msg_cursor.close()
                         msg_conn.close()
-            
-            if not found_groups:
-                # 如果通过群名没找到，尝试从消息内容中查找
-                print("\n通过消息内容查找群...")
-                for msg_db in self.msg_dbs:
-                    try:
-                        msg_conn = sqlite3.connect(msg_db)
-                        msg_cursor = msg_conn.cursor()
-                        
-                        # 查找包含群名的消息
-                        msg_cursor.execute("""
-                            SELECT DISTINCT StrTalker,
-                                   MAX(CreateTime) as latest_time,
-                                   COUNT(*) as msg_count
-                            FROM MSG 
-                            WHERE StrTalker LIKE '%@chatroom'
-                            AND StrContent LIKE ?
-                            GROUP BY StrTalker
-                        """, (f"%{room_name}%",))
-                        
-                        results = msg_cursor.fetchall()
-                        for room_id, latest_time, msg_count in results:
-                            if not any(g[0] == room_id for g in found_groups):
-                                found_groups.append((room_id, msg_db))
-                                print(f"\n通过消息内容找到群:")
-                                print(f"群ID: {room_id}")
-                                print(f"数据库: {os.path.basename(msg_db)}")
-                                print(f"消息数量: {msg_count}")
-                                print(f"最新消息: {datetime.fromtimestamp(latest_time)}")
-                                
-                    finally:
-                        msg_cursor.close()
-                        msg_conn.close()
-            
-            if not found_groups:
-                raise ValueError(f"未找到群「{room_name}」")
-            
-            # 按时间排序，确保返回最新的数据库
-            found_groups.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
-            
-            print(f"\n=== 查找结果 ===")
-            print(f"共找到 {len(found_groups)} 个匹配的群:")
-            for group_id, db in found_groups:
-                print(f"群ID: {group_id}")
-                print(f"数据库: {os.path.basename(db)}")
-                print("-" * 30)
             
             return found_groups
-                
-        except Exception as e:
-            raise ValueError(f"查找群失败: {str(e)}")
+            
+        except sqlite3.Error as e:
+            print(f"查询群ID时出错: {str(e)}")
+            raise ValueError(f"查询群ID失败: {str(e)}")
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_user_info(self, user_id: str) -> str:
         """获取用户信息，优先使用缓存"""
@@ -170,7 +139,7 @@ class WeChatDBReader:
             conn = sqlite3.connect(self.contact_db)
             cursor = conn.cursor()
             
-            # 精确查找用户
+            # 精确查找户
             cursor.execute("""
                 SELECT UserName, NickName, Remark, Type, Alias 
                 FROM Contact
@@ -179,7 +148,7 @@ class WeChatDBReader:
             user = cursor.fetchone()
             
             if user:
-                # 优先级：备注名 > 昵称 > 微信号 > 用户ID
+                # 优先级：备注名 > 昵称 > 号 > 用户ID
                 display_name = user[2] or user[1] or user[4] or user[0]
                 self.user_cache[user_id] = display_name
                 return display_name
@@ -281,7 +250,7 @@ class WeChatDBReader:
             
             print(f"数据库中共找到 {len(records)} 条记录，时间范围内有 {len(filtered_records)} 条")
             
-            # 如果没有在时间范围内找到记录，显示时间范围信息
+            # 如果没有在间范围内找到记录，显示时间范围信息
             if not filtered_records and records:
                 earliest_time = datetime.fromtimestamp(records[-1][0])
                 print(f"\n消息时间范围:")
@@ -324,53 +293,161 @@ class WeChatDBReader:
             cursor.close()
             conn.close()
     
-    def analyze_group(self, group_name, days=1):
+    def analyze_group(self, group_name: str, start_date: date = None, end_date: date = None):
         """分析群聊记录"""
         try:
+            # 参数验证
+            if not start_date or not end_date:
+                start_date = end_date = date.today()
+            
+            if end_date < start_date:
+                raise ValueError("结束日期不能早于开始日期")
+            
+            # 转换日期为时间戳（确保包含完整的日期）
+            start_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())  # 当天 00:00:00
+            end_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())    # 当天 23:59:59
+            
+            print(f"\n===== 查询时间范围 =====")
+            print(f"开始时间: {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"结束时间: {datetime.fromtimestamp(end_timestamp).strftime('%Y-%m-%d %H:%M:%S')}")
+            print("=====================")
+            
             # 1. 获取所有匹配的群ID
             found_groups = self.get_chatroom_id(group_name)
+            if not found_groups:
+                raise ValueError(f"找不到名称包含「{group_name}」的群聊")
             
-            # 2. 获取所有群的聊天记录
+            print(f"找到 {len(found_groups)} 个匹配的群聊")
+            
+            # 2. 获取所有群天记录
             all_records = []
-            total_messages = 0  # 记录总消息数
+            total_messages = 0
+            total_text_messages = 0
             
             for chatroom_id, msg_db in found_groups:
                 try:
-                    records = self.get_chat_records((chatroom_id, msg_db), days=days)
+                    sql = """
+                        SELECT CreateTime, StrContent, Type, IsSender, BytesExtra
+                        FROM MSG 
+                        WHERE StrTalker = ? 
+                        AND CreateTime BETWEEN ? AND ?
+                        ORDER BY CreateTime DESC
+                    """
+                    
+                    conn = sqlite3.connect(msg_db)
+                    cursor = conn.cursor()
+                    
+                    # 先检查一下最新消息
+                    test_sql = """
+                        SELECT CreateTime, StrContent, Type, IsSender, BytesExtra
+                        FROM MSG 
+                        WHERE StrTalker = ? 
+                        ORDER BY CreateTime DESC
+                        LIMIT 1
+                    """
+                    
+                    # 打印调试信息
+                    print(f"\n===== 调试信息 =====")
+                    print(f"数据库: {msg_db}")
+                    print(f"群ID: {chatroom_id}")
+                    print(f"时间范围: {start_timestamp} ~ {end_timestamp}")
+                    
+                    # 先测试最新消息
+                    cursor.execute(test_sql, (chatroom_id,))
+                    latest = cursor.fetchone()
+                    if latest:
+                        latest_time = datetime.fromtimestamp(latest[0])
+                        print(f"最新消息时间: {latest_time}")
+                        print(f"最新消息内容: {latest[1][:100]}")
+                    
+                    # 执行实际查询
+                    cursor.execute(sql, (chatroom_id, start_timestamp, end_timestamp))
+                    records = cursor.fetchall()
+                    print(f"查询到记录数: {len(records)}")
+                    print("===================")
+                    
                     if records:
-                        print(f"从数据库 {msg_db} 中获取到 {len(records)} 条记录")
-                        all_records.extend(records)
-                        total_messages += len(records)
+                        print(f"\n处理数据库: {msg_db}")
+                        print(f"• 原始记录: {len(records):,} 条")
+                        
+                        # 记录时间范围
+                        earliest = datetime.fromtimestamp(records[-1][0])
+                        latest = datetime.fromtimestamp(records[0][0])
+                        print(f"• 时间范围: {earliest.strftime('%Y-%m-%d %H:%M:%S')} ~ {latest.strftime('%Y-%m-%d %H:%M:%S')}")
+                        
+                        # 格式化消息记录
+                        text_count = 0
+                        for timestamp, content, msg_type, is_sender, bytes_extra in records:
+                            total_messages += 1
+                            if msg_type == 1:  # 只处理文本消息
+                                text_count += 1
+                                total_text_messages += 1
+                                try:
+                                    sender = "我" if is_sender else self._get_sender_info(bytes_extra)
+                                    all_records.append({
+                                        'create_time': timestamp,
+                                        'content': content,
+                                        'sender': sender,
+                                        'is_sender': is_sender,
+                                        'bytes_extra': bytes_extra
+                                    })
+                                except Exception as e:
+                                    print(f"处理消息失败: {str(e)}")
+                                    continue
+                        
+                        print(f"• 文本消息: {text_count:,} 条")
+                
                 except Exception as e:
                     print(f"获取群 {chatroom_id} 的记录失败: {str(e)}")
                     continue
+                finally:
+                    cursor.close()
+                    conn.close()
             
-            # 3. 按时间排序 - 修改这里：使用 create_time 而不是 time
+            # 3. 按时间排序
             all_records.sort(key=lambda x: x['create_time'], reverse=True)
             
-            print(f"合并后共有 {len(all_records)} 条记录")
-            
+            # 4. 检查结果
             if not all_records:
-                # 根据不同情况给出不同的提示
+                date_range = f"{start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}"
                 if total_messages == 0:
                     raise ValueError(
-                        f"群「{group_name}」在最近 {days} 天内没有任何消息记录。\n"
-                        f"请尝试选择更长的时间范围，或确认群名称是否正确。"
+                        f"群「{group_name}」在 {date_range} 期间没有任何消息记录。\n"
+                        f"请尝试选择更长的时���范围。"
                     )
                 else:
                     raise ValueError(
-                        f"群「{group_name}」在最近 {days} 天内的消息都是非文本消息（图片、表情等），"
-                        f"无法进行分析。\n请尝试选择更长的时间范围。"
+                        f"群「{group_name}」在 {date_range} 期间共有 {total_messages} 条消息，\n"
+                        f"但都是非文本消息（图片、表情等），无法进行分析。\n"
+                        f"请尝试选择更长的时间范围。"
                     )
+            
+            print(f"\n处理完成:")
+            print(f"• 消息数: {total_messages:,} 条")
+            print(f"• 文本消息: {total_text_messages:,} 条")
+            print(f"• 有效消息: {len(all_records):,} 条")
+            print(f"• 时间范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
             
             return all_records
             
         except ValueError as e:
-            # 直接抛出 ValueError，保持原有的错误信息
             raise
         except Exception as e:
             print(f"分析群聊记录出错: {str(e)}")
             raise ValueError(
-                f"分析群「{group_name}」的聊天记录时出错：{str(e)}\n"
+                f"分析群「{group_name}」的聊天记录时出错。\n"
+                f"错误信息：{str(e)}\n"
                 f"请确认群名称是否正确，或尝试重新解密数据库。"
             )
+    
+    def _get_sender_info(self, bytes_extra) -> str:
+        """从 BytesExtra 中获取发送者信息"""
+        try:
+            bytes_extra_dict = get_BytesExtra(bytes_extra)
+            if bytes_extra_dict and '3' in bytes_extra_dict:
+                sender_id = bytes_extra_dict['3'][0]['2']
+                return self.get_user_info(sender_id)
+            return "未知用户"
+        except Exception as e:
+            print(f"解析发送者信息失败: {str(e)}")
+            return "未知用户"

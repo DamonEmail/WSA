@@ -3,6 +3,7 @@ import requests
 from typing import List, Dict, Tuple
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from .stats import AnalysisStats
 
 # AI配置
 AI_CONFIGS = {
@@ -16,7 +17,7 @@ AI_CONFIGS = {
     "doubao": {
         "name": "豆包AI",
         "api_key": "1d93fe5f-af7f-435f-8a36-8466d98a4ea0",
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "model": "ep-20241219150823-d5gbj",
         "max_tokens": 4096
     }
@@ -37,6 +38,7 @@ class BaseAIClient(ABC):
     
     def __init__(self, max_segment_length: int = 4000):
         self.max_segment_length = max_segment_length
+        self.stats = AnalysisStats()
     
     def split_messages_by_length(self, messages: List[str]) -> List[List[str]]:
         """按长度分段消息
@@ -83,7 +85,7 @@ class BaseAIClient(ABC):
         segments = []
         dates = sorted(date_groups.keys())
         for date in dates:
-            title = f"{date} 「{group_name}」群聊内容分析"
+            title = f"「{group_name}」{date}群聊内容分析"
             messages = date_groups[date]
             
             # 检查该日期的消息是否需要子分段
@@ -102,7 +104,7 @@ class BaseAIClient(ABC):
     
     @abstractmethod
     def analyze_segment(self, messages: List[str], prompt: str, system_prompt: str) -> str:
-        """分析单个片段，需要子类实现
+        """分析单个片段，需��类实现
         Args:
             messages: 消息列表
             prompt: 用户提示词
@@ -115,22 +117,31 @@ class BaseAIClient(ABC):
     def analyze(self, messages: List[dict], group_name: str, system_prompt: str = None) -> str:
         """分析聊天记录"""
         try:
+            self.stats = AnalysisStats()  # 重置统计
+            self.stats.start()  # 开始计时
+            
             if not system_prompt:
                 system_prompt = "你是一位专业的群聊分析师，简明扼要地总结重点。"
             
-            # 按日期分段（包含必要的子分段）
+            # 按日期分段
             segments = self.split_messages_by_date(messages, group_name)
             summaries = []
             
             # 分析每个分段
             for title, segment_messages in segments:
+                chat_text = "\n".join(segment_messages)
+                self.stats.add_segment(chat_text)  # 统计字符
+                
                 prompt = f"请分析以下微信群在{title}的聊天记录，并给出总结。"
                 summary = self.analyze_segment(segment_messages, prompt, system_prompt)
                 if summary:
                     summaries.append(f"{title}：\n{summary}")
             
-            # 合并所有分析结果
-            return "\n\n".join(summaries)
+            # 停止计时
+            self.stats.stop()
+            
+            # 合并所有分析结果，添加统计信息
+            return "\n\n".join(summaries) + self.stats.get_summary()
             
         except Exception as e:
             print(f"AI分析失败: {str(e)}")
@@ -152,7 +163,6 @@ class OpenAIClient(BaseAIClient):
         """分析单个片段"""
         try:
             chat_text = "\n".join(messages)
-            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -168,19 +178,26 @@ class OpenAIClient(BaseAIClient):
                 max_tokens=self.max_tokens,
                 temperature=0.7
             )
+            
+            # 记录token使用情况
+            if hasattr(response, 'usage'):
+                usage = {
+                    'total_tokens': response.usage.total_tokens
+                }
+                self.stats.add_usage(usage)
+            
             return response.choices[0].message.content
             
         except Exception as e:
-            print(f"OpenAI分析片段失败: {str(e)}")
+            print(f"OpenAI分析失败: {str(e)}")
             raise
 
 class DouBaoClient(BaseAIClient):
     def __init__(self):
         config = AI_CONFIGS["doubao"]
-        # 豆包AI支持更长的上下文，可以设置更大的分段长度
-        super().__init__(max_segment_length=6000)  # 恢复到更大的分段长度
+        super().__init__(max_segment_length=4000)
         self.api_key = config["api_key"]
-        self.base_url = config["base_url"]
+        self.base_url = f"{config['base_url']}/chat/completions"
         self.model = config["model"]
         self.max_tokens = config["max_tokens"]
     
@@ -188,6 +205,10 @@ class DouBaoClient(BaseAIClient):
         """分析单个片段"""
         try:
             chat_text = "\n".join(messages)
+            
+            # 添加长度检查
+            if len(chat_text) > 4000:
+                chat_text = chat_text[:4000] + "...(内容已截断)"
             
             response = requests.post(
                 self.base_url,
@@ -210,12 +231,16 @@ class DouBaoClient(BaseAIClient):
                     "max_tokens": self.max_tokens,
                     "temperature": 0.7
                 },
-                timeout=30
+                timeout=30,
+                verify=False
             )
             
             if response.status_code == 200:
                 result = response.json()
                 if "choices" in result and len(result["choices"]) > 0:
+                    # 记录token使用情况
+                    if "usage" in result:
+                        self.stats.add_usage(result["usage"])
                     return result["choices"][0]["message"]["content"]
                 else:
                     raise RuntimeError("豆包AI返回结果格式错误")
@@ -225,5 +250,5 @@ class DouBaoClient(BaseAIClient):
                 raise RuntimeError(f"豆包AI调用失败: {error_msg}")
                 
         except Exception as e:
-            print(f"豆包AI分析失败: {str(e)}")
+            print(f"豆包AI分析失���: {str(e)}")
             raise
