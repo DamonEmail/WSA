@@ -1,16 +1,19 @@
 import os
 import shutil
-from typing import List, Dict
+from typing import List, Dict, Optional
 from Crypto.Cipher import AES
 import sqlite3
 import hashlib
 import time
 import hmac
 import ctypes
+import json
 from ..utils.config import Config
 
 class DBDecrypt:
     """数据库解密工具"""
+    
+    CACHE_FILE = "config/wechat_path.json"
     
     def __init__(self, wxid: str, key: str):
         self.wxid = wxid
@@ -32,7 +35,7 @@ class DBDecrypt:
         # 设置工作目录
         self.base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         
-        # 设置原始数据库目录（存放备份的加��数据库）
+        # 设置原始数据库目录（存放备份的加载数据库）
         self.original_dir = os.path.join(self.base_dir, "original_dbs")
         os.makedirs(self.original_dir, exist_ok=True)
         
@@ -41,9 +44,7 @@ class DBDecrypt:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # 获取微信文件目录
-        self.wechat_files_dir = os.path.expandvars(r"%USERPROFILE%\Documents\WeChat Files")
-        if not os.path.exists(self.wechat_files_dir):
-            raise FileNotFoundError(f"找不到微信文件目录：{self.wechat_files_dir}")
+        self.wechat_files_dir = self._get_wechat_dir()
         
         # 查找用户目录
         self.user_dir = self._find_user_dir()
@@ -51,6 +52,156 @@ class DBDecrypt:
         # 设置数据库目录
         self.msg_dir = os.path.join(self.user_dir, "Msg")
         self.multi_msg_dir = os.path.join(self.msg_dir, "Multi")
+
+    def _get_wechat_dir(self) -> str:
+        """获取微信文件目录，优先使用缓存，失败则搜索"""
+        # 1. 尝试读取缓存
+        cached_path = self._read_cached_path()
+        if cached_path and self._validate_wechat_dir(cached_path):
+            return cached_path
+            
+        # 2. 尝试默认位置
+        default_path = os.path.expandvars(r"%USERPROFILE%\Documents\WeChat Files")
+        if self._validate_wechat_dir(default_path):
+            self._cache_wechat_path(default_path)
+            return default_path
+            
+        # 3. 搜索系统目录
+        found_path = self._search_wechat_dir()
+        if found_path:
+            self._cache_wechat_path(found_path)
+            return found_path
+            
+        raise FileNotFoundError("无法找到微信文件目录")
+    
+    def _validate_wechat_dir(self, path: str) -> bool:
+        """验证目录是否是有效的微信文件目录"""
+        # 只需要验证目录存在即可
+        return os.path.exists(path)
+    
+    def _read_cached_path(self) -> Optional[str]:
+        """读取缓存的路径"""
+        try:
+            if os.path.exists(self.CACHE_FILE):
+                with open(self.CACHE_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get('wechat_path')
+        except Exception as e:
+            print(f"读取缓存失败: {e}")
+        return None
+    
+    def _cache_wechat_path(self, path: str):
+        """缓存微信目录路径"""
+        try:
+            os.makedirs(os.path.dirname(self.CACHE_FILE), exist_ok=True)
+            with open(self.CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'wechat_path': path}, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"缓存路径失败: {e}")
+    
+    def _search_wechat_dir(self) -> Optional[str]:
+        """搜索系统查找微信文件目录"""
+        def log_progress(msg: str):
+            """统一的日志输出"""
+            print(f"[微信目录搜索] {msg}")
+        
+        # 不搜索的目录
+        EXCLUDED_DIRS = {
+            'Windows', 'Program Files', 'Program Files (x86)', 
+            '$Recycle.Bin', 'System Volume Information',
+            'ProgramData', 'Recovery', 'Boot',
+            'node_modules', 'temp', 'tmp',
+            '.git', '.svn', '.idea', '.vscode',
+            'Games', 'PerfLogs'
+        }
+        
+        # 优先搜索的目录
+        PRIORITY_PATHS = [
+            os.path.expandvars(r"%USERPROFILE%"),
+            os.path.expandvars(r"%LOCALAPPDATA%"),
+            os.path.expandvars(r"%APPDATA%"),
+        ]
+        
+        def is_valid_dir(dir_name: str) -> bool:
+            """检查目录是否值得搜索"""
+            if dir_name in EXCLUDED_DIRS:
+                return False
+            if dir_name.startswith('.'):
+                return False
+            if dir_name.startswith('$'):
+                return False
+            return True
+
+        def search_in_dir(start_path: str, max_depth: int = 3) -> Optional[str]:
+            """在指定目录下搜索，限制深度"""
+            try:
+                log_progress(f"正在搜索目录: {start_path}")
+                current_depth = len(start_path.rstrip(os.sep).split(os.sep))
+                
+                for root, dirs, _ in os.walk(start_path):
+                    # 检查搜索深度
+                    depth = len(root.rstrip(os.sep).split(os.sep))
+                    if depth - current_depth > max_depth:
+                        continue
+                    
+                    # 过滤不需要搜索的目录
+                    dirs[:] = [d for d in dirs if is_valid_dir(d)]
+                    
+                    if "WeChat Files" in dirs:
+                        wechat_path = os.path.join(root, "WeChat Files")
+                        if os.path.exists(wechat_path):  # 只要目录存在就认为有效
+                            log_progress(f"✅ 找到微信目录: {wechat_path}")
+                            return wechat_path
+                        else:
+                            log_progress(f"❌ 发现无效的 WeChat Files 目录: {wechat_path}")
+                            
+                    # 如果发现某些特征文件/目录，跳过该分支
+                    if any(skip in dirs for skip in ['node_modules', 'vendor', 'packages']):
+                        dirs.clear()
+                        
+            except Exception as e:
+                log_progress(f"⚠️ 搜索目录 {start_path} 时出错: {str(e)}")
+            return None
+
+        # 1. 先搜索优先目录
+        log_progress("开始在常用位置搜索...")
+        for path in PRIORITY_PATHS:
+            if os.path.exists(path):
+                result = search_in_dir(path, max_depth=2)
+                if result:
+                    return result
+        log_progress("未在常用位置找到微信目录")
+
+        # 2. 搜索系统盘
+        log_progress(f"开始搜索系统盘...")
+        system_drive = os.getenv('SystemDrive', 'C:')
+        result = search_in_dir(f"{system_drive}\\", max_depth=3)
+        if result:
+            return result
+        log_progress("系统盘搜索完成，未找到微信目录")
+
+        # 3. 搜索其他盘符
+        log_progress("准备搜索其他磁盘...")
+        drives = get_drives()
+        total_drives = len([d for d in drives if d.upper() != f"{system_drive}\\"])
+        if total_drives > 0:
+            log_progress(f"发现 {total_drives} 个其他磁盘，这可能需要一些时间...")
+            
+            for drive in drives:
+                if drive.upper() != f"{system_drive}\\":
+                    log_progress(f"正在搜索磁盘 {drive}...")
+                    result = search_in_dir(drive, max_depth=2)
+                    if result:
+                        return result
+                    log_progress(f"磁盘 {drive} 搜索完成")
+        
+        log_progress("⚠️ 搜索完成，但未找到微信目录")
+        log_progress("建议：")
+        log_progress("1. 确认微信是否已安装")
+        log_progress("2. 尝试重新登录微信")
+        log_progress("3. 或手动指定微信文件位置")
+        
+        return None
 
     def _find_user_dir(self) -> str:
         """查找用户目录"""
@@ -64,7 +215,7 @@ class DBDecrypt:
                 if not os.path.isdir(full_path):
                     continue
                     
-                # 检查是���存在 Msg/Multi 目录结构
+                # 检查是否存在 Msg/Multi 目录结构
                 multi_path = os.path.join(full_path, "Msg", "Multi")
                 if not os.path.exists(multi_path):
                     continue

@@ -1,27 +1,29 @@
+import json
+import os
+from typing import Dict, Any
 from openai import OpenAI
 import requests
 from typing import List, Dict, Tuple
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from .stats import AnalysisStats
+import urllib3
+import certifi
+import re
+import math
+
+def load_ai_config() -> Dict[str, Any]:
+    """加载AI配置"""
+    config_path = os.path.join("config", "ai_config.json")
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"加载AI配置失败: {e}")
+        return {}
 
 # AI配置
-AI_CONFIGS = {
-    "openai": {
-        "name": "OpenAI GPT-3.5",
-        "api_key": "sk-XSfRztQaVch68gGtxQnn1dEhtBgYqZu5fz3Mtct1likGpv1x",
-        "base_url": "https://api.chatanywhere.tech/v1",
-        "model": "gpt-3.5-turbo",
-        "max_tokens": 2000
-    },
-    "doubao": {
-        "name": "豆包AI",
-        "api_key": "1d93fe5f-af7f-435f-8a36-8466d98a4ea0",
-        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "model": "ep-20241219150823-d5gbj",
-        "max_tokens": 4096
-    }
-}
+AI_CONFIGS = load_ai_config()
 
 class AIConfig:
     """AI配置管理类"""
@@ -104,7 +106,7 @@ class BaseAIClient(ABC):
     
     @abstractmethod
     def analyze_segment(self, messages: List[str], prompt: str, system_prompt: str) -> str:
-        """分析单个片段，需��类实现
+        """分析单个片段，需类实现
         Args:
             messages: 消息列表
             prompt: 用户提示词
@@ -192,63 +194,126 @@ class OpenAIClient(BaseAIClient):
             print(f"OpenAI分析失败: {str(e)}")
             raise
 
-class DouBaoClient(BaseAIClient):
+def calculate_tokens(text: str) -> int:
+    """估算文本的 token 数量
+    Args:
+        text: 需要计算 token 数的文本
+    Returns:
+        估算的 token 数量
+    """
+    if not text:
+        return 0
+        
+    # 中文、日文、韩文等 CJK 字符的正则表达式
+    cjk_regex = re.compile(
+        r'[\u4E00-\u9FFF\u3400-\u4DBF\u20000-\u2A6DF\u2A700-\u2B73F'
+        r'\u2B740-\u2B81F\u2B820-\u2CEAF\uF900-\uFAFF\u3040-\u309F'
+        r'\u30A0-\u30FF\uAC00-\uD7AF]'
+    )
+    
+    # 英文单词、数字、标点符号的正则表达式
+    word_regex = re.compile(r'\w+|\s+|[^\w\s]')
+    
+    token_count = 0
+    
+    # 计算 CJK 字符的 token 数（每个字符 2 个 token）
+    cjk_chars = len(re.findall(cjk_regex, text))
+    token_count += cjk_chars * 2
+    
+    # 移除已计算的 CJK 字符，处理剩余文本
+    remaining_text = re.sub(cjk_regex, '', text)
+    tokens = re.findall(word_regex, remaining_text)
+    
+    # 计算英文单词和标点的 token 数
+    for token in tokens:
+        if re.match(r'\s+', token):  # 空格
+            continue
+        elif re.match(r'^\w+$', token):  # 英文单词
+            token_count += math.ceil(len(token) / 3.5)
+        else:  # 标点符号
+            token_count += 1
+    
+    return token_count
+
+class DeepSeekClient(BaseAIClient):
     def __init__(self):
-        config = AI_CONFIGS["doubao"]
-        super().__init__(max_segment_length=4000)
+        config = AI_CONFIGS["deepseek"]
         self.api_key = config["api_key"]
         self.base_url = f"{config['base_url']}/chat/completions"
-        self.model = config["model"]
-        self.max_tokens = config["max_tokens"]
+        self.model = "deepseek-ai/DeepSeek-R1"
+        self.max_tokens = 8192
+        # 使用 95% 的 token 限制作为安全阈值
+        self.safe_token_limit = int(self.max_tokens * 0.95)
+        super().__init__(max_segment_length=self.safe_token_limit)
     
     def analyze_segment(self, messages: List[str], prompt: str, system_prompt: str) -> str:
-        """分析单个片段"""
+        """分析单个片段，使用流式请求"""
         try:
             chat_text = "\n".join(messages)
             
-            # 添加长度检查
-            if len(chat_text) > 4000:
-                chat_text = chat_text[:4000] + "...(内容已截断)"
+            # 构建请求体
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": f"{prompt}\n\n聊天记录：\n{chat_text}"
+                    }
+                ],
+                "stream": True,
+                "max_tokens": self.max_tokens,
+                "temperature": 0.7,
+                "top_p": 0.7,
+                "top_k": 50,
+                "frequency_penalty": 0.5,
+                "response_format": {"type": "text"}
+            }
             
+            # 发送流式请求
             response = requests.post(
                 self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json"
                 },
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": system_prompt
-                        },
-                        {
-                            "role": "user",
-                            "content": f"{prompt}\n\n聊天记录：\n{chat_text}"
-                        }
-                    ],
-                    "max_tokens": self.max_tokens,
-                    "temperature": 0.7
-                },
-                timeout=30,
-                verify=False
+                json=payload,
+                stream=True
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                if "choices" in result and len(result["choices"]) > 0:
-                    # 记录token使用情况
-                    if "usage" in result:
-                        self.stats.add_usage(result["usage"])
-                    return result["choices"][0]["message"]["content"]
-                else:
-                    raise RuntimeError("豆包AI返回结果格式错误")
-            else:
+            if response.status_code != 200:
                 error = response.json().get("error", {})
-                error_msg = error.get("message", "未知错误")
-                raise RuntimeError(f"豆包AI调用失败: {error_msg}")
-                
+                raise RuntimeError(f"DeepSeek AI调用失败: {error.get('message', '未知错误')}")
+            
+            # 处理流式响应
+            full_response = ""
+            for line in response.iter_lines():
+                if line:
+                    # 移除 "data: " 前缀
+                    line = line.decode('utf-8').replace("data: ", "")
+                    
+                    # 检查是否是结束标记
+                    if line.strip() == "[DONE]":
+                        break
+                    
+                    try:
+                        data = json.loads(line)
+                        # 只获取内容，忽略思考过程
+                        content = data["choices"][0]["delta"].get("content", "")
+                        if content:
+                            full_response += content
+                    except json.JSONDecodeError:
+                        continue
+            
+            # 记录 token 使用情况（如果有）
+            if hasattr(response, 'usage'):
+                self.stats.add_usage(response.usage)
+            
+            return full_response.strip()
+            
         except Exception as e:
-            print(f"豆包AI分析失���: {str(e)}")
+            print(f"DeepSeek AI分析失败: {str(e)}")
             raise

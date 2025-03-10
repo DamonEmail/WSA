@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, date
 import os
 import re
-from ..utils.ai_client import OpenAIClient, DouBaoClient
+from ..utils.ai_client import OpenAIClient, DeepSeekClient
 from src.core.db_reader import WeChatDBReader
 from src.utils.config import Config
 from src.core.wx_decrypt import WeChatDecrypt
@@ -29,9 +29,14 @@ class WeChatAnalyzerGUI:
         self.root.title("微信群聊分析工具")
         self.root.geometry("900x700")
         
+        # 加载配置
+        self.config = Config()
+        
         # 初始化变量
         self.ai_type = tk.StringVar(value="openai")
-        self.wxid = tk.StringVar()
+        # 使用配置中保存的last_wxid
+        last_wxid = self.config.get('last_wxid', '')
+        self.wxid = tk.StringVar(value=last_wxid)  # 设置默认值
         self.group_name = tk.StringVar()
         self.prompt_type = tk.StringVar(value="default")
         self.default_prompt = "你是一位专业的群聊分析师，简明扼要地总结重点。"
@@ -118,11 +123,15 @@ class WeChatAnalyzerGUI:
         self.dir_label.pack(side=tk.LEFT, padx=5)
     
     def decrypt_database(self):
-        """解密数据库的统一流程"""
+        """解密数据库"""
         wxid = self.wxid.get().strip()
         if not wxid:
-            messagebox.showerror("错误", "请输入微信号")
+            self.show_message("错误", "请输入微信号！", "error")
             return
+            
+        # 保存当前wxid到配置
+        self.config.set('last_wxid', wxid)
+        self.config.save()
         
         try:
             # 禁用按钮
@@ -251,8 +260,10 @@ class WeChatAnalyzerGUI:
         ai_frame = ttk.Frame(first_row)
         ai_frame.pack(side=tk.LEFT, padx=20)
         ttk.Label(ai_frame, text="AI模型:").pack(side=tk.LEFT)
-        ttk.Radiobutton(ai_frame, text="OpenAI", variable=self.ai_type, value="openai").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(ai_frame, text="豆包AI", variable=self.ai_type, value="doubao").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(ai_frame, text="OpenAI", variable=self.ai_type, 
+                       value="openai").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(ai_frame, text="DeepSeek", variable=self.ai_type, 
+                       value="deepseek").pack(side=tk.LEFT, padx=5)
         
         # 提示词设置
         prompt_type_frame = ttk.Frame(first_row)
@@ -370,7 +381,7 @@ class WeChatAnalyzerGUI:
             self.db_path.set(folder)
     
     def start_analysis(self):
-        """���始分析群消息"""
+        """开始分析群消息"""
         group_name = self.group_name.get().strip()
         if not group_name:
             self.show_message("错误", "请输入群名称！", "error")
@@ -388,18 +399,18 @@ class WeChatAnalyzerGUI:
     def run_analysis(self):
         """运行群消息分析"""
         try:
-            def update_ui(text):
+            def update_ui(text, clear=True):
                 """在主线程中更新UI"""
-                self.output_text.delete(1.0, tk.END)
+                if clear:
+                    self.output_text.delete(1.0, tk.END)
                 self.output_text.insert(tk.END, text)
             
             def show_error(title, message):
                 """在主线程中显示错误"""
-                self.root.after(0, lambda: self.show_message(title, message, "error"))
-            
-            def update_button():
-                """在主线程中更新按钮状态"""
-                self.analyze_button.configure(text="开始分析", state="normal")
+                self.root.after(0, lambda: [
+                    update_ui(""),  # 清空"正在分析中"的提示
+                    self.show_message(title, message, "error")
+                ])
             
             try:
                 # 创建数据库读取器
@@ -421,15 +432,15 @@ class WeChatAnalyzerGUI:
                 )
                 record_count = len(chat_records)
                 
-                # 在主线程中显示确认对话框并等待结果
-                dialog_result = [None]  # 使用列表存储结果
+                # 在主线程中显示确认对话框
+                dialog_result = [None]
                 
                 def show_dialog():
                     dialog = AnalysisConfirmDialog(
                         parent=self.root,
                         record_count=record_count,
                         days=int(days),
-                        ai_type=self.ai_type.get()  # 传入当前选择的AI类型
+                        ai_type=self.ai_type.get()
                     )
                     dialog_result[0] = dialog
                 
@@ -443,11 +454,11 @@ class WeChatAnalyzerGUI:
                 # 等待对话框关闭
                 self.root.wait_window(dialog_result[0].dialog)
                 
-                # 如果用户取消，恢复UI状态并返回
+                # 如果用户取消，清空输出并返回
                 if not dialog_result[0].result:
                     self.root.after(0, lambda: [
-                        update_button(),  # 恢复按钮状态
-                        update_ui("")     # 清空本框
+                        update_ui(""),  # 清空输出区域
+                        self.analyze_button.configure(text="开始分析", state="normal")
                     ])
                     return
                 
@@ -480,9 +491,12 @@ class WeChatAnalyzerGUI:
                 ai_type = self.ai_type.get()
                 if ai_type == "openai":
                     client = OpenAIClient()
-                else:
-                    client = DouBaoClient()
-                    
+                else:  # deepseek
+                    client = DeepSeekClient()
+                
+                # 分析前清空"正在分析中"的提示
+                self.root.after(0, lambda: update_ui(""))
+                
                 summary = client.analyze(
                     messages=filtered_records,
                     group_name=self.group_name.get(),
@@ -492,13 +506,20 @@ class WeChatAnalyzerGUI:
                 # 在主线程中显示结果
                 self.root.after(0, lambda: update_ui(summary))
                 
+            except ValueError as e:
+                # 处理已知的错误（如找不到群聊等）
+                show_error("提示", str(e))
             except Exception as e:
+                # 处理未知错误
                 error_msg = str(e)
-                self.root.after(0, lambda: show_error("错误", f"分析失败：{error_msg}"))
+                show_error("错误", f"分析失败：{error_msg}")
                 
         finally:
             # 在主线程中恢复按钮状态
-            self.root.after(0, update_button)
+            self.root.after(0, lambda: self.analyze_button.configure(
+                text="开始分析",
+                state="normal"
+            ))
     
     def copy_summary(self):
         """复制总结内容"""
