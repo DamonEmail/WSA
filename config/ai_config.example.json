@@ -1,13 +1,13 @@
 {
   "openai": {
     "name": "OpenAI GPT-3.5",
-    "api_key": "your-openai-api-key",
+    "api_key": "",
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-3.5-turbo",
     "max_tokens": 2048
   },
   "deepseek": {
-    "api_key": "sk-ffttfoqznlntysbghelwrlovulnpdmwwlpxoqteiafngigtr",
+    "api_key": "",
     "base_url": "https://api.siliconflow.cn/v1",
     "model": "deepseek-ai/DeepSeek-R1",
     "max_tokens": 8192
