@@ -67,3 +67,171 @@ A: 请确保群名称输入正确，可以尝试输入群名称的一部分。
 ## 许可证
 
 本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 开发说明
+
+### 项目结构
+
+```
+WeChatAnalyzer/
+├── src/                    # 源代码目录
+│   ├── core/              # 核心功能模块
+│   │   ├── __init__.py
+│   │   ├── db_decrypt.py  # 数据库解密
+│   │   ├── db_reader.py   # 数据库读取
+│   │   ├── analyzer.py    # 消息分析
+│   │   ├── wx_decrypt.py  # 微信密钥获取
+│   │   └── ai_client.py   # AI 接口客户端
+│   ├── utils/             # 工具类
+│   │   ├── __init__.py
+│   │   ├── config.py      # 配置管理
+│   │   ├── message_parser.py  # 消息解析
+│   │   ├── user_cache.py  # 用户信息缓存
+│   │   └── stats.py       # 统计信息
+│   ├── gui/               # 图形界面
+│   │   ├── __init__.py
+│   │   ├── main_window.py # 主窗口
+│   │   └── widgets/       # 自定义控件
+│   └── __init__.py
+├── config/                # 配置文件目录
+│   ├── ai_config.json     # AI 配置
+│   ├── decrypt_config.json # 解密配置
+│   └── wechat_path.json   # 微信路径缓存
+├── database/             # 解密后的数据库目录
+├── assets/              # 资源文件目录
+│   └── icon.ico         # 程序图标
+├── test.py              # 测试脚本
+├── run.py               # 程序入口
+├── requirements.txt     # 依赖清单
+├── README.md           # 项目说明
+└── LICENSE             # 许可证文件
+```
+
+### 文件说明
+
+1. **核心模块**
+
+   - `db_decrypt.py`: 实现微信数据库解密
+   - `db_reader.py`: 读取和解析数据库内容
+   - `analyzer.py`: 消息分析和统计
+   - `wx_decrypt.py`: 获取微信密钥
+   - `ai_client.py`: AI 接口调用
+
+2. **工具类**
+
+   - `config.py`: 配置文件管理
+   - `message_parser.py`: 消息内容解析
+   - `user_cache.py`: 用户信息缓存
+   - `stats.py`: 统计信息处理
+
+3. **配置文件**
+
+   - `ai_config.json`: AI API 配置
+   - `decrypt_config.json`: 解密相关配置
+   - `wechat_path.json`: 微信安装路径缓存
+
+4. **入口文件**
+   - `run.py`: 主程序入口
+   - `test.py`: 功能测试脚本
+
+### 核心模块说明
+
+1. **数据库解密 (db_decrypt.py)**
+
+   - 负责微信数据库文件的解密
+   - 支持多个数据库文件的批量解密
+   - 自动查找微信安装目录
+
+2. **数据库读取 (db_reader.py)**
+
+   - 读取解密后的数据库内容
+   - 支持多数据库并行查询
+   - 实现消息内容和用户信息的关联
+
+3. **消息分析 (analyzer.py)**
+
+   - 实现消息统计和分析
+   - 支持 AI 智能分析
+   - 生成分析报告
+
+4. **配置管理 (config.py)**
+   - 管理 AI 接口配置
+   - 存储解密信息
+   - 记录用户配置
+
+### 开发指南
+
+1. **环境配置**
+
+```bash
+# 创建虚拟环境
+python -m venv venv
+
+# 激活虚拟环境
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+```
+
+2. **运行测试**
+
+```bash
+# 运行测试脚本
+python test.py
+
+# 运行主程序
+python run.py
+```
+
+3. **代码规范**
+
+- 遵循 PEP 8 编码规范
+- 使用类型注解
+- 添加必要的注释
+- 使用 markdown 格式编写文档
+
+4. **调试建议**
+
+- 使用 test.py 脚本测试基本功能
+- 检查 debug.log 获取详细日志
+- 使用 print 输出关键信息
+- 善用异常处理和错误提示
+
+### 常见开发问题
+
+1. **数据库解密失败**
+
+   - 检查微信是否正在运行
+   - 验证输入的微信号
+   - 确认程序权限
+
+2. **找不到数据库文件**
+
+   - 检查微信安装路径
+   - 验证文件权限
+   - 查看日志输出
+
+3. **AI 分析失败**
+   - 检查网络连接
+   - 验证 API 密钥
+   - 确认配置文件正确
+
+### 贡献指南
+
+1. Fork 项目
+2. 创建特性分支
+3. 提交更改
+4. 推送到分支
+5. 创建 Pull Request
+
+### 开发计划
+
+- [ ] 支持更多 AI 模型
+- [ ] 优化数据库搜索算法
+- [ ] 添加导出功能
+- [ ] 改进用户界面
+- [ ] 增加数据可视化
