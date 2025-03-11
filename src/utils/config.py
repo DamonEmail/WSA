@@ -126,7 +126,12 @@ class Config:
         if wxid not in self.decrypt_config["wechat_info"]:
             self.decrypt_config["wechat_info"][wxid] = {}
         
-        self.decrypt_config["wechat_info"][wxid]["db_dir"] = user_dir
+        # 获取真实的目录名（而不是用户输入的微信号）
+        real_dir = os.path.basename(user_dir)
+        parent_dir = os.path.dirname(user_dir)
+        
+        # 使用真实的目录路径
+        self.decrypt_config["wechat_info"][wxid]["db_dir"] = os.path.join(parent_dir, real_dir)
         self.save_decrypt_config()
     
     def save_decrypt_config(self):

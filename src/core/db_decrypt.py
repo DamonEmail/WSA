@@ -263,10 +263,9 @@ class DBDecrypt:
                             test_data = f.read(4096)
                         self.decrypt_file(test_data)
                         
-                        # 如果解密成功且目录名匹配微信号，立即返回
-                        if self.wxid.lower() in dirname.lower():
-                            print(f"✅ 找到匹配的目录: {full_path}")
-                            return full_path
+                        # 如果解密成功，返回完整路径（不再检查目录名匹配）
+                        print(f"✅ 找到有效目录: {full_path}")
+                        return full_path
                             
                     except Exception:
                         continue
