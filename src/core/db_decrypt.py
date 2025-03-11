@@ -183,13 +183,64 @@ class DBDecrypt:
 
     def _find_user_dir(self) -> str:
         """查找用户目录"""
+        def log(msg):
+            print(msg)
+            if hasattr(self, 'progress_callback') and self.progress_callback:
+                self.progress_callback(msg)
+
         try:
-            # 存储所有有效的目录
-            valid_paths = []
+            log(f"开始查找用户目录，微信ID: {self.wxid}")
             
-            # 遍历 WeChat Files 下的所有目录
-            for dirname in os.listdir(self.wechat_files_dir):
-                full_path = os.path.join(self.wechat_files_dir, dirname)
+            # 1. 获取所有盘符
+            drives = self.get_drives()
+            log(f"发现 {len(drives)} 个磁盘: {', '.join(drives)}")
+            
+            # 2. 按优先级搜索
+            # 2.1 先检查默认位置
+            default_path = os.path.expandvars(r"%USERPROFILE%\Documents\WeChat Files")
+            if os.path.exists(default_path):
+                log(f"检查默认目录: {default_path}")
+                if valid_path := self._check_wechat_dir(default_path):
+                    return valid_path
+            
+            # 2.2 检查常见自定义位置
+            common_paths = [
+                "D:\\WeChat Files",
+                "D:\\Program Files\\WeChat Files",
+                "E:\\WeChat Files"
+            ]
+            for path in common_paths:
+                if os.path.exists(path):
+                    log(f"检查常见位置: {path}")
+                    if valid_path := self._check_wechat_dir(path):
+                        return valid_path
+            
+            # 2.3 依次检查所有盘符
+            for drive in drives:
+                path = os.path.join(drive, "WeChat Files")
+                if os.path.exists(path):
+                    log(f"检查磁盘 {drive}: {path}")
+                    if valid_path := self._check_wechat_dir(path):
+                        return valid_path
+            
+            # 3. 如果所有位置都检查完还没找到，才报错
+            log("\n❌ 搜索完所有位置，未找到有效的微信数据目录")
+            log("可能的原因：")
+            log("1. 微信号输入错误")
+            log("2. 目录权限不足")
+            log("3. 数据库文件不存在或已损坏")
+            raise FileNotFoundError("未找到有效的微信数据目录")
+                
+        except Exception as e:
+            log(f"❌ 查找用户目录时出错：{str(e)}")
+            raise FileNotFoundError(f"查找用户目录时出错：{str(e)}")
+
+    def _check_wechat_dir(self, wechat_dir: str) -> Optional[str]:
+        """检查指定的WeChat Files目录是否有效"""
+        try:
+            # 遍历目录下的所有用户目录
+            for dirname in os.listdir(wechat_dir):
+                full_path = os.path.join(wechat_dir, dirname)
                 if not os.path.isdir(full_path):
                     continue
                     
@@ -199,62 +250,31 @@ class DBDecrypt:
                     continue
                     
                 # 检查是否存在 MSG*.db 文件
-                has_msg_db = any(f.startswith("MSG") and f.endswith(".db") 
-                               for f in os.listdir(multi_path))
-                if not has_msg_db:
+                msg_files = [f for f in os.listdir(multi_path) 
+                           if f.startswith("MSG") and f.endswith(".db")]
+                if not msg_files:
                     continue
                     
-                # 如果目录名包含微信号，优先尝试
-                if self.wxid.lower() in dirname.lower():
-                    valid_paths.insert(0, full_path)  # 放在列表开头
-                else:
-                    valid_paths.append(full_path)
-            
-            if not valid_paths:
-                raise FileNotFoundError("找不到包含消息数据库的目录")
-            
-            # 尝试每个有效目录
-            for path in valid_paths:
-                print(f"尝试目录: {path}")
-                try:
-                    # 尝试解密该目录下的数据库
-                    test_db_path = os.path.join(path, "Msg", "Multi", "MSG0.db")
-                    if not os.path.exists(test_db_path):
-                        continue
-                    
-                    # 读取加密数据
-                    with open(test_db_path, 'rb') as f:
-                        test_data = f.read(4096)  # 只读取第一页进行测试
-                    
-                    # 尝试解密
+                # 尝试解密测试
+                test_db_path = os.path.join(multi_path, "MSG0.db")
+                if os.path.exists(test_db_path):
                     try:
+                        with open(test_db_path, 'rb') as f:
+                            test_data = f.read(4096)
                         self.decrypt_file(test_data)
-                        print(f"✅ 成功解密目录: {path}")
                         
-                        try:
-                            # 更新配置文件
-                            config = Config()
-                            config.update_user_dir(self.wxid, path)
-                        except Exception as e:
-                            # 即使配置更新失败，也不影响主流程
-                            print(f"更新配置失败: {str(e)}")
-                        
-                        # 成功解密后直接返回路径
-                        return path
-                        
-                    except Exception as e:
-                        print(f"该目录解密失败: {str(e)}")
+                        # 如果解密成功且目录名匹配微信号，立即返回
+                        if self.wxid.lower() in dirname.lower():
+                            print(f"✅ 找到匹配的目录: {full_path}")
+                            return full_path
+                            
+                    except Exception:
                         continue
                     
-                except Exception as e:
-                    print(f"尝试目录 {path} 时出错: {str(e)}")
-                    continue
-            
-            # 所有目录都尝试失败后才抛出异常
-            raise FileNotFoundError("所有可能的目录都解密失败")
-                
         except Exception as e:
-            raise FileNotFoundError(f"查找用户目录时出错：{str(e)}")
+            print(f"检查目录 {wechat_dir} 失败: {str(e)}")
+        
+        return None
 
     def decrypt_file(self, encrypted_data: bytes) -> bytes:
         """解密数据"""
