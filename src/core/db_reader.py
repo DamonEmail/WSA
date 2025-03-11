@@ -413,7 +413,7 @@ class WeChatDBReader:
                 if total_messages == 0:
                     raise ValueError(
                         f"群「{group_name}」在 {date_range} 期间没有任何消息记录。\n"
-                        f"请尝试选择更长的时���范围。"
+                        f"请尝试选择更长的时间范围。"
                     )
                 else:
                     raise ValueError(
